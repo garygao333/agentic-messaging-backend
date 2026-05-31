@@ -2,12 +2,13 @@
 import { Hono } from 'hono';
 import { parseInbound } from '../msp/parse.js';
 import { handleInbound } from '../runtime/handlers.js';
+import { requireAppAuth } from '../auth.js';
 
 export const webhook = new Hono();
 
-// --- TEMP DEBUG: ring buffer of the last few raw inbound payloads. ---
+// --- DEBUG: ring buffer of the last few raw inbound payloads. ---
 // Lets us inspect exactly what 1440 sends without Railway log access.
-// Remove once the live loop is confirmed.
+// Auth-gated by APP_SHARED_TOKEN. Remove entirely before production.
 interface DebugEntry {
   at: string;
   event: string | null;
@@ -20,7 +21,9 @@ function record(e: DebugEntry) {
   if (recentWebhooks.length > 25) recentWebhooks.pop();
 }
 
-webhook.get('/debug/webhooks', (c) => c.json({ count: recentWebhooks.length, recent: recentWebhooks }));
+webhook.get('/debug/webhooks', requireAppAuth, (c) =>
+  c.json({ count: recentWebhooks.length, recent: recentWebhooks }),
+);
 
 webhook.post('/webhook', async (c) => {
   let body: any;
