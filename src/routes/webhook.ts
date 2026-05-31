@@ -5,6 +5,23 @@ import { handleInbound } from '../runtime/handlers.js';
 
 export const webhook = new Hono();
 
+// --- TEMP DEBUG: ring buffer of the last few raw inbound payloads. ---
+// Lets us inspect exactly what 1440 sends without Railway log access.
+// Remove once the live loop is confirmed.
+interface DebugEntry {
+  at: string;
+  event: string | null;
+  parsed: { eventType: string; customerId: string | null; text: string | null; selections: string[] };
+  raw: unknown;
+}
+const recentWebhooks: DebugEntry[] = [];
+function record(e: DebugEntry) {
+  recentWebhooks.unshift(e);
+  if (recentWebhooks.length > 25) recentWebhooks.pop();
+}
+
+webhook.get('/debug/webhooks', (c) => c.json({ count: recentWebhooks.length, recent: recentWebhooks }));
+
 webhook.post('/webhook', async (c) => {
   let body: any;
   try {
@@ -18,6 +35,19 @@ webhook.post('/webhook', async (c) => {
 
   const evt = parseInbound(body);
   const event = c.req.header('X-Webhook-Event') ?? evt.eventType;
+
+  record({
+    at: new Date().toISOString(),
+    event,
+    parsed: {
+      eventType: evt.eventType,
+      customerId: evt.customerId,
+      text: evt.text,
+      selections: evt.selections,
+    },
+    raw: body,
+  });
+  console.log(`[webhook] event=${event} customer=${evt.customerId ?? 'none'} text=${JSON.stringify(evt.text)}`);
 
   // Only customer-originated message/interactive events drive the agent.
   const actionable =
