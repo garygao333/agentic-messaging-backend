@@ -49,9 +49,13 @@ webhook.post('/webhook', async (c) => {
   });
   console.log(`[webhook] event=${event} customer=${evt.customerId ?? 'none'} text=${JSON.stringify(evt.text)}`);
 
-  // Only customer-originated message/interactive events drive the agent.
-  const actionable =
-    event.endsWith('message.received') || event.endsWith('interactive') || evt.eventType === 'message.received';
+  // Drive the agent on any customer-originated message that carries content.
+  // NOTE: 1440 uses event_type "text" for text messages (not "message.received"
+  // as the docs show), so match on content presence, excluding signal-only events.
+  const IGNORE = ['typing_start', 'typing_end', 'close', 'agent_handback'];
+  const isIgnored = IGNORE.some((t) => event.endsWith(t));
+  const hasContent = evt.text !== null || evt.selections.length > 0;
+  const actionable = !isIgnored && hasContent;
 
   if (actionable && evt.customerId) {
     // Fire-and-forget so we ACK 1440 quickly (it retries non-2xx up to 3x).
