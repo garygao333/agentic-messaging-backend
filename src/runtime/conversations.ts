@@ -11,6 +11,7 @@
  */
 import { supabase } from '../supabase.js';
 import type { HistoryTurn } from '../llm/reply.js';
+import { returnActiveHandoffsToAgent, type HandoffStatus } from './handoff.js';
 
 const memRouting = new Map<string, string>();
 let schemaReady: boolean | null = null;
@@ -35,6 +36,9 @@ export interface ConversationState {
   id: string | null; // null when persistence unavailable
   messages: HistoryTurn[];
   activeAgentId: string | null;
+  status: 'Open' | 'Needs Human' | 'Resolved' | null;
+  mspConversationId: string | null;
+  activeHandoffStatus: HandoffStatus | null;
 }
 
 function rowsToHistory(messages: any): HistoryTurn[] {
@@ -42,6 +46,20 @@ function rowsToHistory(messages: any): HistoryTurn[] {
   return messages
     .filter((m) => m && typeof m.text === 'string')
     .map((m) => ({ role: m.role === 'customer' ? 'customer' : 'agent', text: m.text }));
+}
+
+function publicTurn(turn: HistoryTurn): Record<string, unknown> {
+  return {
+    id: crypto.randomUUID(),
+    role: turn.role,
+    text: turn.text,
+    timestamp: new Date().toISOString(),
+    ...(turn.kind ? { kind: turn.kind } : {}),
+    ...(turn.attachments ? { attachments: turn.attachments } : {}),
+    ...(turn.interactive ? { interactive: turn.interactive } : {}),
+    ...(turn.tapbacks ? { tapbacks: turn.tapbacks } : {}),
+    ...(turn.payload ? { payload: turn.payload } : {}),
+  };
 }
 
 /** Set the agent this customer's thread is testing. */
@@ -57,8 +75,9 @@ export async function setActiveAgent(customerId: string, agentId: string): Promi
     if (data?.id) {
       await supabase
         .from('conversations')
-        .update({ active_agent_id: agentId, agent_id: agentId })
+        .update({ active_agent_id: agentId, agent_id: agentId, status: 'Open' })
         .eq('id', data.id);
+      await returnActiveHandoffsToAgent(data.id);
     } else {
       await supabase.from('conversations').insert({
         agent_id: agentId,
@@ -75,24 +94,58 @@ export async function setActiveAgent(customerId: string, agentId: string): Promi
 }
 
 /** Load the current conversation state for a customer (history + active agent). */
-export async function loadState(customerId: string): Promise<ConversationState> {
+export async function loadState(
+  customerId: string,
+  mspConversationId?: string | null,
+): Promise<ConversationState> {
   const memAgent = memRouting.get(customerId) ?? null;
-  if (!(await ready())) return { id: null, messages: [], activeAgentId: memAgent };
+  if (!(await ready())) {
+    return {
+      id: null,
+      messages: [],
+      activeAgentId: memAgent,
+      status: null,
+      mspConversationId: mspConversationId ?? null,
+      activeHandoffStatus: null,
+    };
+  }
   try {
     const { data } = await supabase
       .from('conversations')
-      .select('id, messages, active_agent_id')
+      .select('id, messages, active_agent_id, status')
       .eq('customer_id', customerId)
       .maybeSingle();
-    if (!data) return { id: null, messages: [], activeAgentId: memAgent };
+    if (!data) {
+      return {
+        id: null,
+        messages: [],
+        activeAgentId: memAgent,
+        status: null,
+        mspConversationId: mspConversationId ?? null,
+        activeHandoffStatus: null,
+      };
+    }
+    if (mspConversationId) {
+      await persistMspConversationId(data.id, mspConversationId);
+    }
     return {
       id: data.id,
       messages: rowsToHistory(data.messages),
       activeAgentId: data.active_agent_id ?? memAgent,
+      status: data.status ?? null,
+      mspConversationId: mspConversationId ?? null,
+      activeHandoffStatus: await loadActiveHandoffStatus(data.id),
     };
   } catch (err) {
     console.warn('[conversations] loadState failed:', err);
-    return { id: null, messages: [], activeAgentId: memAgent };
+    return {
+      id: null,
+      messages: [],
+      activeAgentId: memAgent,
+      status: null,
+      mspConversationId: mspConversationId ?? null,
+      activeHandoffStatus: null,
+    };
   }
 }
 
@@ -110,12 +163,7 @@ export async function appendTurn(
       .eq('id', conversationId)
       .maybeSingle();
     const messages = Array.isArray(data?.messages) ? data!.messages : [];
-    messages.push({
-      id: crypto.randomUUID(),
-      role: turn.role,
-      text: turn.text,
-      timestamp: new Date().toISOString(),
-    });
+    messages.push(publicTurn(turn));
     await supabase
       .from('conversations')
       .update({
@@ -127,5 +175,37 @@ export async function appendTurn(
       .eq('id', conversationId);
   } catch (err) {
     console.warn('[conversations] appendTurn failed:', err);
+  }
+}
+
+async function persistMspConversationId(
+  conversationId: string,
+  mspConversationId: string,
+): Promise<void> {
+  try {
+    const { error } = await supabase
+      .from('conversations')
+      .update({ msp_conversation_id: mspConversationId })
+      .eq('id', conversationId);
+    if (error) throw error;
+  } catch (err) {
+    console.warn('[conversations] msp_conversation_id persist skipped:', err);
+  }
+}
+
+async function loadActiveHandoffStatus(conversationId: string): Promise<HandoffStatus | null> {
+  try {
+    const { data, error } = await supabase
+      .from('handoff_sessions')
+      .select('status')
+      .eq('conversation_id', conversationId)
+      .in('status', ['handoff_requested', 'queued', 'assigned', 'human_active', 'bot_paused'])
+      .order('requested_at', { ascending: false })
+      .limit(1)
+      .maybeSingle();
+    if (error) throw error;
+    return (data?.status as HandoffStatus | undefined) ?? null;
+  } catch {
+    return null;
   }
 }

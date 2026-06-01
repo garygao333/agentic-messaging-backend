@@ -14,6 +14,9 @@ export interface InboundEvent {
   text: string | null;
   /** Identifiers the customer selected (quick reply / list picker), if any. */
   selections: string[];
+  attachments: any[];
+  interactive: any | null;
+  tapbacks: any[];
   raw: any;
 }
 
@@ -44,6 +47,16 @@ export function parseInbound(body: any): InboundEvent {
       for (const it of ir.selectedItems) if (it?.identifier) selections.push(String(it.identifier));
     }
   }
+  const attachments = Array.isArray(payload?.attachments)
+    ? payload.attachments
+    : Array.isArray(body?.attachments)
+      ? body.attachments
+      : [];
+  const tapbacks = Array.isArray(payload?.tapbacks)
+    ? payload.tapbacks
+    : Array.isArray(body?.tapbacks)
+      ? body.tapbacks
+      : [];
 
   return {
     eventType: str(body?.event_type) ?? str(payload?.type) ?? 'unknown',
@@ -51,6 +64,9 @@ export function parseInbound(body: any): InboundEvent {
     conversationId: str(body?.conversation_id),
     text,
     selections,
+    attachments,
+    interactive: ir,
+    tapbacks,
     raw: body,
   };
 }

@@ -8,9 +8,14 @@
 import type { MiddlewareHandler } from 'hono';
 import { env } from './env.js';
 
+let warnedOpenAuth = false;
+
 export const requireAppAuth: MiddlewareHandler = async (c, next) => {
   if (!env.appSharedToken) {
-    console.warn('[auth] APP_SHARED_TOKEN unset — LLM endpoints are OPEN. Set it before deploying.');
+    if (!warnedOpenAuth) {
+      warnedOpenAuth = true;
+      console.warn('[auth] APP_SHARED_TOKEN unset — app/operator endpoints are OPEN. Set it before deploying.');
+    }
     return next();
   }
   const header = c.req.header('Authorization') ?? '';

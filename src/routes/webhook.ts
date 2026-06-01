@@ -62,9 +62,13 @@ webhook.post('/webhook', async (c) => {
 
   if (actionable && evt.customerId) {
     // Fire-and-forget so we ACK 1440 quickly (it retries non-2xx up to 3x).
-    handleInbound(evt.customerId, evt.text, evt.selections, evt.conversationId).catch((err) =>
-      console.error('[webhook] handler error:', err),
-    );
+    handleInbound(evt.customerId, evt.text, evt.selections, evt.conversationId, {
+      eventType: event,
+      attachments: evt.attachments,
+      interactive: evt.interactive,
+      tapbacks: evt.tapbacks,
+      raw: evt.raw,
+    }).catch((err) => console.error('[webhook] handler error:', err));
   } else {
     console.log(`[webhook] ignored event=${event} customer=${evt.customerId ?? 'none'}`);
   }

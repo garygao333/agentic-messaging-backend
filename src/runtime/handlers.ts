@@ -9,14 +9,16 @@ import { supabase } from '../supabase.js';
 import { sendAppClip, sendText } from '../msp/send.js';
 import { parseCommand } from './commands.js';
 import { setActiveAgent } from './conversations.js';
-import { runAgentTurn } from './agentRuntime.js';
+import type { InboundTurnMetadata } from './agentRuntime.js';
 import { verifyLoginCode } from './login.js';
+import { bufferAgentTurn } from './responseBuffer.js';
 
 export async function handleInbound(
   customerId: string,
   text: string | null,
   selections: string[],
   mspConversationId: string | null,
+  metadata: InboundTurnMetadata = {},
 ): Promise<void> {
   // An interactive selection with no text == a quick-reply tap; treat the
   // selected label as the customer's message to the active agent.
@@ -25,7 +27,7 @@ export async function handleInbound(
 
   switch (cmd.kind) {
     case 'LOGIN': {
-      const result = await verifyLoginCode(cmd.code);
+      const result = await verifyLoginCode(cmd.code, customerId);
       const msg =
         result === 'verified'
           ? "You're verified — head back to the app to continue."
@@ -86,7 +88,7 @@ export async function handleInbound(
     }
 
     case 'PLAIN': {
-      await runAgentTurn(customerId, cmd.text, mspConversationId);
+      await bufferAgentTurn(customerId, cmd.text, mspConversationId, metadata);
       return;
     }
   }

@@ -9,11 +9,53 @@ import { supabase } from '../supabase.js';
 
 export type LoginResult = 'verified' | 'invalid' | 'unavailable';
 
-export async function verifyLoginCode(code: string): Promise<LoginResult> {
+function handleParts(handle: string | null): {
+  displayName: string | null;
+  phone: string | null;
+  appleId: string | null;
+  email: string | null;
+} {
+  const clean = handle?.trim() || null;
+  if (!clean) return { displayName: null, phone: null, appleId: null, email: null };
+  const looksPhone = /^\+?[0-9 ()-]{7,}$/.test(clean);
+  const looksEmail = clean.includes('@');
+  return {
+    displayName: clean,
+    phone: looksPhone ? clean : null,
+    appleId: looksEmail ? clean : null,
+    email: looksEmail ? clean : null,
+  };
+}
+
+async function bindCustomerProfile(customerId: string, handle: string | null): Promise<void> {
+  const parts = handleParts(handle);
+  try {
+    const { error } = await supabase.from('customer_profiles').upsert(
+      {
+        customer_id: customerId,
+        display_name: parts.displayName ?? 'Apple Customer',
+        phone: parts.phone,
+        apple_id: parts.appleId,
+        email: parts.email,
+        last_seen_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      },
+      { onConflict: 'customer_id' },
+    );
+    if (error) console.warn('[login] customer profile bind skipped:', error);
+  } catch (err) {
+    console.warn('[login] customer profile bind unavailable:', err);
+  }
+}
+
+export async function verifyLoginCode(
+  code: string,
+  customerId?: string | null,
+): Promise<LoginResult> {
   try {
     const { data, error } = await supabase
       .from('auth_codes')
-      .select('id, expires_at')
+      .select('id, apple_id, expires_at')
       .eq('code', code)
       .eq('verified', false)
       .order('created_at', { ascending: false })
@@ -23,6 +65,7 @@ export async function verifyLoginCode(code: string): Promise<LoginResult> {
     if (!row) return 'invalid';
     if (row.expires_at && new Date(row.expires_at).getTime() < Date.now()) return 'invalid';
     await supabase.from('auth_codes').update({ verified: true }).eq('id', row.id);
+    if (customerId) await bindCustomerProfile(customerId, row.apple_id ?? null);
     return 'verified';
   } catch {
     return 'unavailable';

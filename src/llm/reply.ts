@@ -10,6 +10,11 @@ import { complete, type ChatMessage } from './openai.js';
 export interface HistoryTurn {
   role: 'customer' | 'agent';
   text: string;
+  kind?: string;
+  attachments?: unknown[];
+  interactive?: unknown;
+  tapbacks?: unknown[];
+  payload?: Record<string, unknown>;
 }
 
 export async function chatReply(
