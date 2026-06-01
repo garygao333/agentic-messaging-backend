@@ -207,7 +207,20 @@ export async function runAgentTurn(
     : [];
 
   if (actions.length >= 2) {
-    await sendQuickReply(customerId, reply, actions, nextRequestId());
+    const optionPrompt = 'Pick a next step:';
+    await sendText(customerId, reply);
+    await logConversationEvent({
+      conversationId: state.id,
+      agentId,
+      customerId,
+      mspConversationId,
+      eventType: 'ai_reply',
+      actor: 'agent',
+      body: reply,
+    });
+    await appendTurn(state.id, { role: 'agent', text: reply });
+
+    await sendQuickReply(customerId, optionPrompt, actions, nextRequestId());
     await logConversationEvent({
       conversationId: state.id,
       agentId,
@@ -215,8 +228,19 @@ export async function runAgentTurn(
       mspConversationId,
       eventType: 'quick_reply_sent',
       actor: 'agent',
-      body: reply,
-      payload: { actions },
+      body: optionPrompt,
+      payload: { actions, precedingReply: reply },
+    });
+    await appendTurn(state.id, {
+      role: 'agent',
+      text: optionPrompt,
+      kind: 'quick_reply',
+      interactive: {
+        type: 'quick_reply',
+        title: optionPrompt,
+        subtitle: 'Tap to respond',
+        items: actions.map((title) => ({ id: title, title })),
+      },
     });
   } else {
     await sendText(customerId, reply);
@@ -229,20 +253,6 @@ export async function runAgentTurn(
       actor: 'agent',
       body: reply,
     });
+    await appendTurn(state.id, { role: 'agent', text: reply });
   }
-  await appendTurn(state.id, {
-    role: 'agent',
-    text: reply,
-    ...(actions.length >= 2
-      ? {
-          kind: 'quick_reply',
-          interactive: {
-            type: 'quick_reply',
-            title: reply,
-            subtitle: 'Tap to respond',
-            items: actions.map((title) => ({ id: title, title })),
-          },
-        }
-      : {}),
-  });
 }

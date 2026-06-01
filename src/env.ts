@@ -40,5 +40,5 @@ export const env = {
 
   appSharedToken: process.env.APP_SHARED_TOKEN ?? '',
 
-  agentResponseBufferMs: Number(process.env.AGENT_RESPONSE_BUFFER_MS ?? 5000),
+  agentResponseBufferMs: Number(process.env.AGENT_RESPONSE_BUFFER_MS ?? 0),
 } as const;

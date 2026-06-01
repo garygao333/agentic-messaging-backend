@@ -33,6 +33,18 @@ async function enqueueBufferedAgentTurn(
 ): Promise<void> {
   await recordCustomerTurn(customerId, customerText, mspConversationId, metadata);
 
+  if (env.agentResponseBufferMs <= 0) {
+    const existing = pendingReplies.get(customerId);
+    if (existing) {
+      clearTimeout(existing.timer);
+      pendingReplies.delete(customerId);
+    }
+    await runAgentTurn(customerId, customerText, mspConversationId, metadata, {
+      recordCustomerTurn: false,
+    });
+    return;
+  }
+
   const existing = pendingReplies.get(customerId);
   if (existing) {
     existing.texts.push(customerText);

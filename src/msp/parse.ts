@@ -24,6 +24,11 @@ function str(v: unknown): string | null {
   return typeof v === 'string' && v.length ? v : null;
 }
 
+function addSelection(selections: string[], value: unknown): void {
+  const text = str(value);
+  if (text && !selections.includes(text)) selections.push(text);
+}
+
 export function parseInbound(body: any): InboundEvent {
   const headers = body?.headers ?? {};
   const payload = body?.payload ?? {};
@@ -38,13 +43,25 @@ export function parseInbound(body: any): InboundEvent {
     str(body?.textBody) ??
     null;
 
-  // Interactive selections (Bot Webhook pre-parsed shape).
-  const ir = payload?.interactiveResponse ?? body?.interactiveResponse ?? null;
+  // Interactive selections (Bot Webhook pre-parsed shape + raw MSP interactiveData).
+  const ir =
+    payload?.interactiveResponse ??
+    body?.interactiveResponse ??
+    payload?.interactiveData ??
+    body?.interactiveData ??
+    null;
   const selections: string[] = [];
   if (ir) {
-    if (ir.selectedItem?.identifier) selections.push(String(ir.selectedItem.identifier));
+    addSelection(selections, ir.selectedItem?.identifier ?? ir.selectedItem?.title);
     if (Array.isArray(ir.selectedItems)) {
-      for (const it of ir.selectedItems) if (it?.identifier) selections.push(String(it.identifier));
+      for (const it of ir.selectedItems) addSelection(selections, it?.identifier ?? it?.title);
+    }
+    const quickReply = ir.data?.['quick-reply'] ?? ir['quick-reply'];
+    addSelection(selections, quickReply?.selectedIdentifier);
+    const selectedIndex = Number(quickReply?.selectedIndex);
+    if (Number.isInteger(selectedIndex) && Array.isArray(quickReply?.items)) {
+      const selected = quickReply.items[selectedIndex];
+      addSelection(selections, selected?.identifier ?? selected?.title);
     }
   }
   const attachments = Array.isArray(payload?.attachments)
