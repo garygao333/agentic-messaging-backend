@@ -48,6 +48,32 @@ async function bindCustomerProfile(customerId: string, handle: string | null): P
   }
 }
 
+async function bindWorkspaceIdentity(
+  workspaceUserId: string | null,
+  customerId: string | null | undefined,
+  handle: string | null,
+): Promise<void> {
+  if (!workspaceUserId || !customerId) return;
+
+  try {
+    const now = new Date().toISOString();
+    const { error } = await supabase.from('workspace_message_identities').upsert(
+      {
+        workspace_user_id: workspaceUserId,
+        customer_id: customerId,
+        display_handle: handle,
+        verified_at: now,
+        last_seen_at: now,
+        updated_at: now,
+      },
+      { onConflict: 'workspace_user_id' },
+    );
+    if (error) console.warn('[login] workspace identity bind skipped:', error);
+  } catch (err) {
+    console.warn('[login] workspace identity bind unavailable:', err);
+  }
+}
+
 export async function verifyLoginCode(
   code: string,
   customerId?: string | null,
@@ -55,7 +81,7 @@ export async function verifyLoginCode(
   try {
     const { data, error } = await supabase
       .from('auth_codes')
-      .select('id, apple_id, expires_at')
+      .select('id, workspace_user_id, apple_id, display_handle, expires_at')
       .eq('code', code)
       .eq('verified', false)
       .order('created_at', { ascending: false })
@@ -64,8 +90,13 @@ export async function verifyLoginCode(
     const row = data?.[0];
     if (!row) return 'invalid';
     if (row.expires_at && new Date(row.expires_at).getTime() < Date.now()) return 'invalid';
-    await supabase.from('auth_codes').update({ verified: true }).eq('id', row.id);
-    if (customerId) await bindCustomerProfile(customerId, row.apple_id ?? null);
+    await supabase
+      .from('auth_codes')
+      .update({ verified: true, customer_id: customerId ?? null })
+      .eq('id', row.id);
+    const handle = row.display_handle ?? row.apple_id ?? null;
+    if (customerId) await bindCustomerProfile(customerId, handle);
+    await bindWorkspaceIdentity(row.workspace_user_id ?? null, customerId, handle);
     return 'verified';
   } catch {
     return 'unavailable';
