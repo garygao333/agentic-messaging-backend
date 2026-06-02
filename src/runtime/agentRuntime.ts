@@ -8,7 +8,7 @@
  */
 import { getAgent } from '../supabase.js';
 import { chatReply, type HistoryTurn } from '../llm/reply.js';
-import { requestAgent, sendQuickReply, sendText } from '../msp/send.js';
+import { requestAgent, sendQuickReply, sendRichLink, sendText } from '../msp/send.js';
 import { appendTurn, loadState, type ConversationState } from './conversations.js';
 import {
   createHandoffSession,
@@ -19,6 +19,24 @@ import {
 
 let reqCounter = 0;
 const nextRequestId = () => `amb-${Date.now()}-${reqCounter++}`;
+const CHERT_WEBSITE_URL = 'https://trychert.com';
+const CHERT_DEMO_URL = 'https://cal.com/team/chert/chert-call';
+const GENERAL_ACTIONS = ['Book demo', 'See API features', 'Check fit', 'Talk to founder'];
+
+type ActionIntent = 'intro' | 'menu' | 'api' | 'fit' | 'none';
+
+interface ActionPlan {
+  intent: ActionIntent;
+  prompt: string;
+  actions: string[];
+}
+
+interface RichLinkPlan {
+  url: string;
+  title: string;
+  body: string;
+  reason: 'website' | 'demo';
+}
 
 /** Cheap heuristic for "get me a human". Decision: latest-wins, no LLM classifier for MVP. */
 function wantsHuman(text: string): boolean {
@@ -58,6 +76,205 @@ function messageKind(metadata: InboundTurnMetadata): string {
   if (tapbacks.length > 0) return 'tapback';
   if (metadata.eventType === 'close') return 'close';
   return 'text';
+}
+
+function hasAny(text: string, patterns: RegExp[]): boolean {
+  return patterns.some((pattern) => pattern.test(text));
+}
+
+function normalizeText(text: string): string {
+  return text.toLowerCase().replace(/\s+/g, ' ').trim();
+}
+
+function uniqueActions(actions: string[]): string[] {
+  const seen = new Set<string>();
+  return actions
+    .map((action) => action.trim())
+    .filter((action) => {
+      const key = action.toLowerCase();
+      if (!action || seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    })
+    .slice(0, 4);
+}
+
+function customerTurnCount(history: HistoryTurn[]): number {
+  return history.filter((turn) => turn.role === 'customer').length;
+}
+
+function recentlySentQuickReply(history: HistoryTurn[], prompt?: string): boolean {
+  const target = prompt ? normalizeText(prompt) : null;
+  return history.slice(-8).some((turn) => {
+    if (turn.role !== 'agent') return false;
+    if (turn.kind === 'quick_reply' || turn.interactive) {
+      return !target || normalizeText(turn.text) === target;
+    }
+    return /pick (a|the)|choose|what kind of|which messages feature|tap to respond/i.test(
+      turn.text,
+    );
+  });
+}
+
+function inferActionPlan(customerText: string, history: HistoryTurn[]): ActionPlan {
+  const text = normalizeText(customerText);
+  const asksForMenu = hasAny(text, [
+    /\b(options?|choices?|menu|next steps?)\b/,
+    /\bwhat can you do\b/,
+    /\bhelp me choose\b/,
+  ]);
+  const asksAboutApi = hasAny(text, [
+    /\b(api|apis|webhook|webhooks|msp|apple messages|imessage|messages for business)\b/,
+    /\b(features?|rich links?|quick replies|list picker|carousel|time picker|tapbacks?|attachments?|handoff)\b/,
+  ]);
+  const asksAboutFit = hasAny(text, [
+    /\b(check fit|fit|use cases?|for my|my business|my store|e-?commerce|shopify)\b/,
+    /\bhealthcare|home services?|hospitality|clinic|restaurant|retail\b/,
+  ]);
+  const greeting =
+    customerTurnCount(history) <= 2 &&
+    hasAny(text, [/\b(hi|hello|hey|who are you|what is this|how does this work)\b/]);
+
+  if (asksAboutApi) {
+    return {
+      intent: 'api',
+      prompt: 'Which Messages feature should I show next?',
+      actions: ['Rich links', 'Quick replies', 'Human handoff', 'Book demo'],
+    };
+  }
+
+  if (asksAboutFit) {
+    return {
+      intent: 'fit',
+      prompt: 'What kind of conversation are you testing?',
+      actions: ['E-commerce', 'Healthcare', 'Home services', 'Book demo'],
+    };
+  }
+
+  if (asksForMenu) {
+    return {
+      intent: 'menu',
+      prompt: 'Pick the path that fits:',
+      actions: GENERAL_ACTIONS,
+    };
+  }
+
+  if (greeting) {
+    return {
+      intent: 'intro',
+      prompt: 'Pick the path that fits:',
+      actions: GENERAL_ACTIONS,
+    };
+  }
+
+  return { intent: 'none', prompt: '', actions: [] };
+}
+
+function shouldSendActionPlan(
+  plan: ActionPlan,
+  history: HistoryTurn[],
+  metadata: InboundTurnMetadata,
+): boolean {
+  if (plan.actions.length < 2) return false;
+  if (plan.intent === 'none') return false;
+
+  // Interactive taps should not echo the same card back. The exception is when
+  // the tap intentionally drills into a different branch, like API features.
+  if (metadata.interactive && plan.intent !== 'api' && plan.intent !== 'fit') return false;
+  if (recentlySentQuickReply(history, plan.prompt)) return false;
+  return true;
+}
+
+function richLinksFor(customerText: string): RichLinkPlan[] {
+  const text = normalizeText(customerText);
+  const links: RichLinkPlan[] = [];
+  const wantsDemoLink = hasAny(text, [
+    /\b(book|schedule|demo|call|meeting|calendar|kickoff)\b/,
+    /\b(founder|gary|talk to founder)\b/,
+  ]);
+  const wantsWebsiteLink = hasAny(text, [
+    /\b(website|web site|site|homepage|home page|learn more|company page)\b/,
+    /\btrychert\b/,
+    /trychert\.com/,
+  ]);
+  const genericLinkAsk = /\b(url|link)\b/.test(text);
+
+  if (wantsWebsiteLink || (genericLinkAsk && !wantsDemoLink)) {
+    links.push({
+      url: CHERT_WEBSITE_URL,
+      title: 'Chert',
+      body: CHERT_WEBSITE_URL,
+      reason: 'website',
+    });
+  }
+
+  if (wantsDemoLink) {
+    links.push({
+      url: CHERT_DEMO_URL,
+      title: 'Book a Chert call',
+      body: CHERT_DEMO_URL,
+      reason: 'demo',
+    });
+  }
+
+  const seen = new Set<string>();
+  return links.filter((link) => {
+    if (seen.has(link.url)) return false;
+    seen.add(link.url);
+    return true;
+  });
+}
+
+async function sendRichLinkWithFallback(input: {
+  customerId: string;
+  conversationId: string | null;
+  agentId: string;
+  mspConversationId: string | null;
+  link: RichLinkPlan;
+}): Promise<void> {
+  try {
+    await sendRichLink(input.customerId, {
+      url: input.link.url,
+      title: input.link.title,
+      body: input.link.body,
+    });
+    await logConversationEvent({
+      conversationId: input.conversationId,
+      agentId: input.agentId,
+      customerId: input.customerId,
+      mspConversationId: input.mspConversationId,
+      eventType: 'rich_link_sent',
+      actor: 'agent',
+      body: input.link.url,
+      payload: { richLink: input.link },
+    });
+    await appendTurn(input.conversationId, {
+      role: 'agent',
+      text: input.link.url,
+      kind: 'rich_link',
+      richLink: input.link,
+      payload: { richLink: input.link },
+    });
+  } catch (err) {
+    console.warn('[runtime] rich-link send failed:', err);
+    await logConversationEvent({
+      conversationId: input.conversationId,
+      agentId: input.agentId,
+      customerId: input.customerId,
+      mspConversationId: input.mspConversationId,
+      eventType: 'rich_link_failed',
+      actor: 'msp',
+      body: errText(err),
+      payload: { richLink: input.link },
+    });
+    await sendText(input.customerId, input.link.url);
+    await appendTurn(input.conversationId, {
+      role: 'agent',
+      text: input.link.url,
+      kind: 'text',
+      payload: { richLinkFallback: input.link },
+    });
+  }
 }
 
 export async function recordCustomerTurn(
@@ -202,25 +419,45 @@ export async function runAgentTurn(
 
   const reply = await chatReply({ prompt: agent.prompt, guardrails: agent.guardrails }, history);
 
-  const actions = Array.isArray(agent.suggested_actions)
-    ? agent.suggested_actions.map(String).filter(Boolean).slice(0, 4)
+  const actionPlan = inferActionPlan(customerText, history);
+  const configuredActions = Array.isArray(agent.suggested_actions)
+    ? agent.suggested_actions.map(String).filter(Boolean)
     : [];
+  const useConfiguredActions =
+    configuredActions.length > 0 && (actionPlan.intent === 'intro' || actionPlan.intent === 'menu');
+  const actions = uniqueActions(useConfiguredActions ? configuredActions : actionPlan.actions);
+  const sendActions = shouldSendActionPlan({ ...actionPlan, actions }, history, metadata);
+  const richLinks = richLinksFor(customerText);
 
-  if (actions.length >= 2) {
-    const optionPrompt = 'Pick a next step:';
-    await sendText(customerId, reply);
-    await logConversationEvent({
+  await sendText(customerId, reply);
+  await logConversationEvent({
+    conversationId: state.id,
+    agentId,
+    customerId,
+    mspConversationId,
+    eventType: 'ai_reply',
+    actor: 'agent',
+    body: reply,
+    payload: {
+      actionIntent: actionPlan.intent,
+      actionPrompt: actionPlan.prompt || null,
+      richLinkReasons: richLinks.map((link) => link.reason),
+    },
+  });
+  await appendTurn(state.id, { role: 'agent', text: reply });
+
+  for (const link of richLinks) {
+    await sendRichLinkWithFallback({
+      customerId,
       conversationId: state.id,
       agentId,
-      customerId,
       mspConversationId,
-      eventType: 'ai_reply',
-      actor: 'agent',
-      body: reply,
+      link,
     });
-    await appendTurn(state.id, { role: 'agent', text: reply });
+  }
 
-    await sendQuickReply(customerId, optionPrompt, actions, nextRequestId());
+  if (sendActions) {
+    await sendQuickReply(customerId, actionPlan.prompt, actions, nextRequestId());
     await logConversationEvent({
       conversationId: state.id,
       agentId,
@@ -228,31 +465,19 @@ export async function runAgentTurn(
       mspConversationId,
       eventType: 'quick_reply_sent',
       actor: 'agent',
-      body: optionPrompt,
-      payload: { actions, precedingReply: reply },
+      body: actionPlan.prompt,
+      payload: { actions, precedingReply: reply, actionIntent: actionPlan.intent },
     });
     await appendTurn(state.id, {
       role: 'agent',
-      text: optionPrompt,
+      text: actionPlan.prompt,
       kind: 'quick_reply',
       interactive: {
         type: 'quick_reply',
-        title: optionPrompt,
+        title: actionPlan.prompt,
         subtitle: 'Tap to respond',
         items: actions.map((title) => ({ id: title, title })),
       },
     });
-  } else {
-    await sendText(customerId, reply);
-    await logConversationEvent({
-      conversationId: state.id,
-      agentId,
-      customerId,
-      mspConversationId,
-      eventType: 'ai_reply',
-      actor: 'agent',
-      body: reply,
-    });
-    await appendTurn(state.id, { role: 'agent', text: reply });
   }
 }

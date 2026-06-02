@@ -45,7 +45,16 @@ function rowsToHistory(messages: any): HistoryTurn[] {
   if (!Array.isArray(messages)) return [];
   return messages
     .filter((m) => m && typeof m.text === 'string')
-    .map((m) => ({ role: m.role === 'customer' ? 'customer' : 'agent', text: m.text }));
+    .map((m) => ({
+      role: m.role === 'customer' ? 'customer' : 'agent',
+      text: m.text,
+      ...(typeof m.kind === 'string' ? { kind: m.kind } : {}),
+      ...(m.attachments ? { attachments: m.attachments } : {}),
+      ...(m.interactive ? { interactive: m.interactive } : {}),
+      ...(m.tapbacks ? { tapbacks: m.tapbacks } : {}),
+      ...(m.richLink ? { richLink: m.richLink } : {}),
+      ...(m.payload ? { payload: m.payload } : {}),
+    }));
 }
 
 function publicTurn(turn: HistoryTurn): Record<string, unknown> {
@@ -58,6 +67,7 @@ function publicTurn(turn: HistoryTurn): Record<string, unknown> {
     ...(turn.attachments ? { attachments: turn.attachments } : {}),
     ...(turn.interactive ? { interactive: turn.interactive } : {}),
     ...(turn.tapbacks ? { tapbacks: turn.tapbacks } : {}),
+    ...(turn.richLink ? { richLink: turn.richLink } : {}),
     ...(turn.payload ? { payload: turn.payload } : {}),
   };
 }

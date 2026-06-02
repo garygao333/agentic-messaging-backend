@@ -1,5 +1,7 @@
 import { Hono } from 'hono';
 import { requireAppAuth } from '../auth.js';
+import { sendText } from '../msp/send.js';
+import { appendTurn } from '../runtime/conversations.js';
 import { supabase } from '../supabase.js';
 
 export const operator = new Hono();
@@ -13,6 +15,7 @@ const ACTIVE_HANDOFF_STATUSES = [
   'human_active',
   'bot_paused',
 ];
+const HANDOFF_PRIORITIES = ['low', 'normal', 'high', 'urgent'];
 
 const CONVERSATION_SELECT_FULL =
   'id, agent_id, active_agent_id, customer_id, msp_conversation_id, customer_name, last_message, status, timestamp, messages';
@@ -40,6 +43,28 @@ function cleanText(value: unknown): string | null {
   if (typeof value !== 'string') return null;
   const trimmed = value.trim();
   return trimmed ? trimmed : null;
+}
+
+function operatorIdFromBody(body: any): string {
+  return (
+    cleanText(body?.operatorId) ??
+    cleanText(body?.assignedOperator) ??
+    cleanText(body?.operatorName) ??
+    'operator'
+  );
+}
+
+function operatorNameFromBody(body: any): string | null {
+  return cleanText(body?.operatorName) ?? cleanText(body?.assignedOperator);
+}
+
+function noteFromBody(body: any): string | null {
+  return cleanText(body?.note) ?? cleanText(body?.reason);
+}
+
+function priorityFromBody(body: any): string {
+  const priority = cleanText(body?.priority);
+  return priority && HANDOFF_PRIORITIES.includes(priority) ? priority : 'normal';
 }
 
 function textArray(value: unknown): string[] | undefined {
@@ -287,6 +312,23 @@ async function fetchHandoff(id: string) {
   return data;
 }
 
+async function fetchActiveHandoffForConversation(conversationId: string | null) {
+  if (!conversationId) return null;
+  const { data, error } = await supabase
+    .from('handoff_sessions')
+    .select(HANDOFF_SELECT)
+    .eq('conversation_id', conversationId)
+    .in('status', ACTIVE_HANDOFF_STATUSES)
+    .order('requested_at', { ascending: false })
+    .limit(1)
+    .maybeSingle();
+  if (error) {
+    warnOnce('active handoff detail', error);
+    return null;
+  }
+  return data;
+}
+
 async function addHandoffNote(input: {
   handoffId: string;
   conversationId: string | null;
@@ -334,7 +376,7 @@ async function addConversationEvent(input: {
   operatorId: string | null;
   action: string;
   note: string | null;
-  handoffId: string;
+  handoffId: string | null;
 }) {
   const { error } = await supabase.from('conversation_events').insert({
     conversation_id: input.conversationId,
@@ -345,7 +387,7 @@ async function addConversationEvent(input: {
     actor: 'operator',
     body: input.note,
     payload: {
-      handoffSessionId: input.handoffId,
+      ...(input.handoffId ? { handoffSessionId: input.handoffId } : {}),
       operatorId: input.operatorId,
     },
   });
@@ -359,6 +401,150 @@ async function setConversationStatus(conversationId: string | null, status: 'Ope
     .update({ status, timestamp: new Date().toISOString() })
     .eq('id', conversationId);
   if (error) warnOnce('conversation status update', error);
+}
+
+async function refreshConversation(fallback: any) {
+  return (fallback?.id ? await fetchConversation(fallback.id) : null) ?? fallback;
+}
+
+async function setConversationHandoffState(
+  conversation: any,
+  body: any,
+  input: {
+    toStatus: 'bot_paused' | 'human_active';
+    action: string;
+    conversationStatus: 'Needs Human';
+    defaultReason: string;
+  },
+): Promise<{ handoff: any | null; error?: 'handoff unavailable' }> {
+  const operatorId = operatorIdFromBody(body);
+  const note = noteFromBody(body);
+  const now = new Date().toISOString();
+  const existing = await fetchActiveHandoffForConversation(conversation.id);
+  const assignedOperator = cleanText(body?.assignedOperator) ?? operatorId;
+  const patch: Record<string, unknown> = {
+    status: input.toStatus,
+    reason: note ?? input.defaultReason,
+    priority: priorityFromBody(body),
+    assigned_team: cleanText(body?.team) ?? cleanText(body?.assignedTeam),
+    assigned_operator: assignedOperator,
+    updated_at: now,
+  };
+  if (input.toStatus === 'human_active') patch.assigned_at = existing?.assigned_at ?? now;
+
+  const result = existing
+    ? await supabase
+        .from('handoff_sessions')
+        .update(patch)
+        .eq('id', existing.id)
+        .select(HANDOFF_SELECT)
+        .single()
+    : await supabase
+        .from('handoff_sessions')
+        .insert({
+          conversation_id: conversation.id,
+          agent_id: conversation.active_agent_id ?? conversation.agent_id ?? null,
+          customer_id: conversation.customer_id ?? null,
+          msp_conversation_id: conversation.msp_conversation_id ?? null,
+          trigger: input.action,
+          summary: cleanText(body?.summary),
+          suggested_reply: cleanText(body?.suggestedReply),
+          ...patch,
+        })
+        .select(HANDOFF_SELECT)
+        .single();
+
+  if (result.error) {
+    warnOnce(input.action, result.error);
+    return { handoff: null, error: 'handoff unavailable' };
+  }
+
+  await setConversationStatus(conversation.id, input.conversationStatus);
+  await addHandoffNote({
+    handoffId: result.data.id,
+    conversationId: conversation.id,
+    operatorId,
+    note,
+  });
+  await addHandoffAudit({
+    handoffId: result.data.id,
+    conversationId: conversation.id,
+    operatorId,
+    action: input.action,
+    fromStatus: existing?.status ?? null,
+    toStatus: input.toStatus,
+    note,
+  });
+  await addConversationEvent({
+    conversationId: conversation.id,
+    agentId: conversation.active_agent_id ?? conversation.agent_id ?? null,
+    customerId: conversation.customer_id ?? null,
+    mspConversationId: conversation.msp_conversation_id ?? null,
+    operatorId,
+    action: input.action,
+    note,
+    handoffId: result.data.id,
+  });
+
+  return { handoff: result.data };
+}
+
+async function returnConversationToAgent(
+  conversation: any,
+  body: any,
+): Promise<{ handoff: any | null; error?: 'handoff unavailable' }> {
+  const operatorId = operatorIdFromBody(body);
+  const note = noteFromBody(body);
+  const now = new Date().toISOString();
+  const existing = await fetchActiveHandoffForConversation(conversation.id);
+  let handoff = null;
+
+  if (existing) {
+    const { data, error } = await supabase
+      .from('handoff_sessions')
+      .update({
+        status: 'returned_to_agent',
+        returned_to_agent_at: now,
+        updated_at: now,
+      })
+      .eq('id', existing.id)
+      .select(HANDOFF_SELECT)
+      .single();
+    if (error) {
+      warnOnce('conversation resume', error);
+      return { handoff: null, error: 'handoff unavailable' };
+    }
+    handoff = data;
+    await addHandoffNote({
+      handoffId: existing.id,
+      conversationId: conversation.id,
+      operatorId,
+      note,
+    });
+    await addHandoffAudit({
+      handoffId: existing.id,
+      conversationId: conversation.id,
+      operatorId,
+      action: 'conversation_resumed',
+      fromStatus: existing.status ?? null,
+      toStatus: 'returned_to_agent',
+      note,
+    });
+  }
+
+  await setConversationStatus(conversation.id, 'Open');
+  await addConversationEvent({
+    conversationId: conversation.id,
+    agentId: conversation.active_agent_id ?? conversation.agent_id ?? null,
+    customerId: conversation.customer_id ?? null,
+    mspConversationId: conversation.msp_conversation_id ?? null,
+    operatorId,
+    action: 'conversation_resumed',
+    note,
+    handoffId: existing?.id ?? null,
+  });
+
+  return { handoff };
 }
 
 async function transitionHandoff(
@@ -510,6 +696,119 @@ operator.get('/operator/conversations/:id/customer-profile', async (c) => {
       createdAt: profile?.created_at ?? null,
       updatedAt: profile?.updated_at ?? null,
     },
+  });
+});
+
+operator.post('/operator/conversations/:id/messages', async (c) => {
+  const conversation = await fetchConversation(c.req.param('id'));
+  if (!conversation) return c.json({ error: 'conversation not found' }, 404);
+
+  const body = await c.req.json().catch(() => ({}));
+  const text = cleanText(body.text) ?? cleanText(body.message) ?? cleanText(body.body);
+  if (!text) return c.json({ error: 'text is required' }, 400);
+
+  const customerId = conversation.customer_id ?? null;
+  if (!customerId) {
+    return c.json({ error: 'conversation is missing customer_id' }, 409);
+  }
+
+  const pauseAgent = body.pauseAgent !== false;
+  let handoff = null;
+  if (pauseAgent) {
+    const state = await setConversationHandoffState(conversation, body, {
+      toStatus: 'human_active',
+      action: 'operator_message_takeover',
+      conversationStatus: 'Needs Human',
+      defaultReason: 'Operator sent a customer-visible message',
+    });
+    if (state.error) return c.json({ error: state.error }, 503);
+    handoff = state.handoff;
+  }
+
+  try {
+    await sendText(customerId, text);
+  } catch (err) {
+    warnOnce('operator send message', err);
+    return c.json({ error: 'message send failed' }, 502);
+  }
+
+  const operatorId = operatorIdFromBody(body);
+  const operatorName = operatorNameFromBody(body);
+  await appendTurn(
+    conversation.id,
+    {
+      role: 'agent',
+      text,
+      kind: 'text',
+      payload: {
+        actor: 'operator',
+        operatorId,
+        ...(operatorName ? { operatorName } : {}),
+      },
+    },
+    pauseAgent ? 'Needs Human' : undefined,
+  );
+  await addConversationEvent({
+    conversationId: conversation.id,
+    agentId: conversation.active_agent_id ?? conversation.agent_id ?? null,
+    customerId,
+    mspConversationId: conversation.msp_conversation_id ?? null,
+    operatorId,
+    action: 'operator_message_sent',
+    note: text,
+    handoffId: handoff?.id ?? null,
+  });
+
+  const updated = await refreshConversation(conversation);
+  return c.json({
+    delivered: true,
+    conversation: mapConversation(updated),
+    handoff: handoff ? mapHandoff(handoff) : null,
+    message: {
+      role: 'agent',
+      text,
+      kind: 'text',
+      payload: {
+        actor: 'operator',
+        operatorId,
+        ...(operatorName ? { operatorName } : {}),
+      },
+    },
+  });
+});
+
+operator.post('/operator/conversations/:id/pause', async (c) => {
+  const conversation = await fetchConversation(c.req.param('id'));
+  if (!conversation) return c.json({ error: 'conversation not found' }, 404);
+
+  const body = await c.req.json().catch(() => ({}));
+  const state = await setConversationHandoffState(conversation, body, {
+    toStatus: 'bot_paused',
+    action: 'conversation_paused',
+    conversationStatus: 'Needs Human',
+    defaultReason: 'Operator paused automated replies',
+  });
+  if (state.error) return c.json({ error: state.error }, 503);
+
+  const updated = await refreshConversation(conversation);
+  return c.json({
+    conversation: mapConversation(updated),
+    handoff: state.handoff ? mapHandoff(state.handoff) : null,
+  });
+});
+
+operator.post('/operator/conversations/:id/resume', async (c) => {
+  const conversation = await fetchConversation(c.req.param('id'));
+  if (!conversation) return c.json({ error: 'conversation not found' }, 404);
+
+  const body = await c.req.json().catch(() => ({}));
+  const state = await returnConversationToAgent(conversation, body);
+  if (state.error) return c.json({ error: state.error }, 503);
+
+  const updated = await refreshConversation(conversation);
+  return c.json({
+    conversation: mapConversation(updated),
+    handoff: state.handoff ? mapHandoff(state.handoff) : null,
   });
 });
 

@@ -14,6 +14,7 @@ export interface HistoryTurn {
   attachments?: unknown[];
   interactive?: unknown;
   tapbacks?: unknown[];
+  richLink?: unknown;
   payload?: Record<string, unknown>;
 }
 

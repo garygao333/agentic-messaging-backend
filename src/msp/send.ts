@@ -6,6 +6,21 @@
  * headers.source_id). Standard/interactive messages MUST use urn:mbid:.
  */
 import { env } from '../env.js';
+import { readFileSync } from 'node:fs';
+
+let defaultRichLinkImageBase64: string | null | undefined;
+
+function richLinkImageBase64(): string | undefined {
+  if (defaultRichLinkImageBase64 !== undefined) return defaultRichLinkImageBase64 ?? undefined;
+  try {
+    defaultRichLinkImageBase64 = readFileSync(
+      new URL('../../brand/chert-richlink.png', import.meta.url),
+    ).toString('base64');
+  } catch {
+    defaultRichLinkImageBase64 = null;
+  }
+  return defaultRichLinkImageBase64 ?? undefined;
+}
 
 async function post(body: unknown): Promise<any> {
   const res = await fetch(`${env.mspApiBase}/send-message-api`, {
@@ -32,6 +47,39 @@ async function post(body: unknown): Promise<any> {
 
 export function sendText(destinationId: string, text: string) {
   return post({ destinationId, messageType: 'text', content: { text } });
+}
+
+export function sendRichLink(
+  destinationId: string,
+  input: {
+    url: string;
+    title: string;
+    body?: string;
+    imageBase64Png?: string;
+  },
+) {
+  const imageBase64Png = input.imageBase64Png ?? richLinkImageBase64();
+  return post({
+    destinationId,
+    messageType: 'richLink',
+    content: {
+      body: input.body ?? input.url,
+      richLinkData: {
+        url: input.url,
+        title: input.title,
+        ...(imageBase64Png
+          ? {
+              assets: {
+                image: {
+                  data: imageBase64Png,
+                  mimeType: 'image/png',
+                },
+              },
+            }
+          : {}),
+      },
+    },
+  });
 }
 
 /**
