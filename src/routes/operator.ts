@@ -24,6 +24,8 @@ const AGENT_SELECT =
   'id, name, company_name, website, business_type, use_case, integrations, prompt, guardrails, handoff_destination, test_users, status, created_at, updated_at, last_deployed_at';
 const HANDOFF_SELECT =
   'id, conversation_id, agent_id, customer_id, msp_conversation_id, trigger, reason, priority, status, summary, suggested_reply, assigned_team, assigned_operator, sla_deadline, requested_at, assigned_at, resolved_at, returned_to_agent_at, last_error, created_at, updated_at';
+const APPOINTMENT_SELECT =
+  'id, conversation_id, agent_id, customer_id, customer_name, service_identifier, service_title, service_subtitle, slot_identifier, starts_at, duration_seconds, location_title, status, payment_status, payment_amount, payment_currency, patient_details, extraction, created_at, updated_at';
 
 const warned = new Set<string>();
 
@@ -163,6 +165,99 @@ function mapCustomerProfile(row: any) {
     lastSeenAt: row.last_seen_at ?? null,
     createdAt: row.created_at ?? null,
     updatedAt: row.updated_at ?? null,
+  };
+}
+
+function mapAppointment(row: any) {
+  return {
+    id: row.id,
+    conversationId: row.conversation_id ?? null,
+    agentId: row.agent_id ?? null,
+    customerId: row.customer_id ?? null,
+    customerName: row.customer_name ?? 'Apple Customer',
+    serviceIdentifier: row.service_identifier ?? null,
+    serviceTitle: row.service_title ?? null,
+    serviceSubtitle: row.service_subtitle ?? null,
+    slotIdentifier: row.slot_identifier ?? null,
+    startsAt: row.starts_at ?? null,
+    durationSeconds: row.duration_seconds ?? null,
+    locationTitle: row.location_title ?? null,
+    status: row.status ?? 'collecting',
+    paymentStatus: row.payment_status ?? 'not_required',
+    paymentAmount: row.payment_amount ?? null,
+    paymentCurrency: row.payment_currency ?? 'USD',
+    patientDetails:
+      row.patient_details && typeof row.patient_details === 'object' && !Array.isArray(row.patient_details)
+        ? row.patient_details
+        : {},
+    extraction:
+      row.extraction && typeof row.extraction === 'object' && !Array.isArray(row.extraction)
+        ? row.extraction
+        : {},
+    createdAt: row.created_at ?? null,
+    updatedAt: row.updated_at ?? null,
+  };
+}
+
+function normalizeLookup(value: unknown): string {
+  return String(value ?? '').toLowerCase().replace(/\s+/g, ' ').trim();
+}
+
+function selectedInteractiveItem(messages: any[], interactiveKind: string) {
+  const promptIndex = messages.findIndex((message: any) => message?.kind === interactiveKind);
+  if (promptIndex === -1) return null;
+
+  const prompt = messages[promptIndex];
+  const items = Array.isArray(prompt?.interactive?.items) ? prompt.interactive.items : [];
+  const customerTurns = messages.slice(promptIndex + 1).filter((message: any) => message?.role === 'customer');
+
+  for (const turn of customerTurns) {
+    const text = normalizeLookup(turn?.text);
+    if (!text) continue;
+    const match = items.find((item: any) => {
+      const id = normalizeLookup(item?.id ?? item?.identifier);
+      const title = normalizeLookup(item?.title);
+      return text === id || text === title || text.includes(title) || title.includes(text);
+    });
+    if (match) return match;
+  }
+
+  return null;
+}
+
+function derivedAppointmentFromConversation(row: any) {
+  const messages = Array.isArray(row.messages) ? row.messages : [];
+  const serviceTurn = messages.find((message: any) => message?.kind === 'list_picker');
+  const timeTurn = messages.find((message: any) => message?.kind === 'time_picker');
+  const paymentTurn = messages.find((message: any) => message?.kind === 'apple_pay');
+  if (!serviceTurn && !timeTurn && !paymentTurn) return null;
+
+  const selectedService = selectedInteractiveItem(messages, 'list_picker');
+  const selectedSlot = selectedInteractiveItem(messages, 'time_picker');
+  const selectedSlotPayload = selectedSlot
+    ? timeTurn?.payload?.event?.timeslots?.find((slot: any) => slot?.identifier === selectedSlot.id)
+    : null;
+  return {
+    id: `derived_${row.id}`,
+    conversation_id: row.id,
+    agent_id: row.active_agent_id ?? row.agent_id,
+    customer_id: row.customer_id,
+    customer_name: row.customer_name ?? 'Apple Customer',
+    service_identifier: selectedService?.id ?? null,
+    service_title: selectedService?.title ?? null,
+    service_subtitle: selectedService?.subtitle ?? null,
+    slot_identifier: selectedSlot?.id ?? null,
+    starts_at: selectedSlotPayload?.startTime ?? null,
+    duration_seconds: selectedSlotPayload?.duration ?? null,
+    location_title: timeTurn?.payload?.event?.location?.title ?? null,
+    status: paymentTurn ? 'payment_requested' : selectedSlot ? 'scheduled' : 'collecting',
+    payment_status: paymentTurn?.payload?.liveApplePayConfigured ? 'requested' : paymentTurn ? 'preview_only' : 'not_required',
+    payment_amount: paymentTurn?.payload?.paymentPreview?.amount ?? null,
+    payment_currency: paymentTurn?.payload?.paymentPreview?.currencyCode ?? 'USD',
+    patient_details: {},
+    extraction: { source: 'conversation_fallback' },
+    created_at: row.timestamp ?? null,
+    updated_at: row.timestamp ?? null,
   };
 }
 
@@ -904,6 +999,38 @@ operator.get('/operator/handoffs', async (c) => {
     return c.json({ handoffs: [] });
   }
   return c.json({ handoffs: (data ?? []).map(mapHandoff) });
+});
+
+operator.get('/operator/appointments', async (c) => {
+  const limit = limitFromQuery(c.req.query('limit'), 100);
+  const agentId = cleanText(c.req.query('agentId'));
+  const status = cleanText(c.req.query('status'));
+  const customerId = cleanText(c.req.query('customerId'));
+
+  let query = supabase
+    .from('appointments')
+    .select(APPOINTMENT_SELECT)
+    .order('starts_at', { ascending: true, nullsFirst: false })
+    .order('updated_at', { ascending: false })
+    .limit(limit);
+  if (agentId) query = query.eq('agent_id', agentId);
+  if (status && status !== 'all') query = query.eq('status', status);
+  if (customerId) query = query.eq('customer_id', customerId);
+
+  const { data, error } = await query;
+  if (!error) {
+    return c.json({ appointments: (data ?? []).map(mapAppointment), source: 'appointments' });
+  }
+
+  warnOnce('appointments list', error);
+  const rows = await fetchConversations({ agentId, status: null, q: null, limit });
+  const derived = rows
+    .map(derivedAppointmentFromConversation)
+    .filter(Boolean)
+    .filter((row: any) => !status || status === 'all' || row.status === status)
+    .filter((row: any) => !customerId || row.customer_id === customerId)
+    .slice(0, limit);
+  return c.json({ appointments: derived.map(mapAppointment), source: 'conversations' });
 });
 
 operator.post('/operator/handoffs/:id/claim', (c) =>

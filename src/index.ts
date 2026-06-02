@@ -38,9 +38,6 @@ app.get('/health', (c) =>
   c.json({
     ok: true,
     service: 'agentic-messaging-backend',
-    supabaseKey: env.usingServiceKey ? 'service' : 'anon',
-    model: env.openaiModel,
-    businessId: env.mspBusinessId,
   }),
 );
 

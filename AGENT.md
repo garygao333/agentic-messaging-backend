@@ -11,6 +11,7 @@ The sibling app lives at `/Users/chert/agentic-messaging`. That Expo app is the 
 - `src/routes/agents.ts` - app-auth-gated LLM endpoints: `/agents/generate` and `/agents/:id/preview-message`.
 - `src/routes/webhook.ts` - 1440 inbound webhook plus auth-gated debug ring buffer.
 - `src/runtime/` - command handling, login verification, active-agent routing, conversation persistence, and live agent turns.
+- `src/runtime/plugins/` - optional vertical-specific live behavior. Keep custom flows here instead of growing `agentRuntime.ts`.
 - `src/msp/` - 1440 payload parsing and outbound send/request-agent helpers.
 - `src/llm/` - OpenAI client, prompts, config generation, and chat replies.
 - `supabase/migrations/0003_messaging_backend.sql` - shared DB additions for AMB customer routing and login codes.
@@ -38,5 +39,6 @@ curl http://localhost:8787/health
 
 ## Notes For Agents
 - Never expose or copy secrets from `.env` into docs, logs, commits, or the app repo.
+- When adding a custom customer workflow, prefer a runtime plugin in `src/runtime/plugins/` and register it in `registry.ts`.
 - Persistence intentionally degrades until `0003` is applied; after `0003`, conversations can be keyed by Apple `customer_id` and login codes can be verified.
 - The webhook must respond quickly to 1440; keep runtime work best-effort/fire-and-forget from the request path.

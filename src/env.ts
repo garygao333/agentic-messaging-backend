@@ -24,6 +24,7 @@ if (!SUPABASE_SERVICE_KEY) {
 }
 
 export const env = {
+  nodeEnv: process.env.NODE_ENV ?? 'development',
   port: Number(process.env.PORT ?? 8787),
 
   supabaseUrl: req('SUPABASE_URL'),
@@ -38,7 +39,14 @@ export const env = {
   mspBusinessId: req('MSP_BUSINESS_ID'),
   mspWebhookSecret: process.env.MSP_WEBHOOK_SECRET ?? '',
 
+  applePayMerchantIdentifier: process.env.APPLE_PAY_MERCHANT_IDENTIFIER ?? '',
+  applePayPaymentGatewayUrl: process.env.APPLE_PAY_PAYMENT_GATEWAY_URL ?? '',
+  applePayFallbackUrl: process.env.APPLE_PAY_FALLBACK_URL ?? '',
+  applePayMerchantSessionJson: process.env.APPLE_PAY_MERCHANT_SESSION_JSON ?? '',
+
   appSharedToken: process.env.APP_SHARED_TOKEN ?? '',
+  requireAppAuth:
+    process.env.REQUIRE_APP_AUTH === 'true' || process.env.NODE_ENV === 'production',
 
   agentResponseBufferMs: Number(process.env.AGENT_RESPONSE_BUFFER_MS ?? 0),
 } as const;

@@ -8,18 +8,37 @@ import {
 interface PendingReply {
   timer: NodeJS.Timeout;
   texts: string[];
+  metadatas: InboundTurnMetadata[];
   mspConversationId: string | null;
 }
 
 const pendingReplies = new Map<string, PendingReply>();
 const customerChains = new Map<string, Promise<void>>();
 
+function mergeMetadata(items: InboundTurnMetadata[]): InboundTurnMetadata {
+  const merged: InboundTurnMetadata = {};
+  for (const item of items) {
+    if (item.eventType) merged.eventType = item.eventType;
+    if (Array.isArray(item.attachments) && item.attachments.length > 0) {
+      merged.attachments = [...(Array.isArray(merged.attachments) ? merged.attachments : []), ...item.attachments];
+    }
+    if (item.interactive) merged.interactive = item.interactive;
+    if (Array.isArray(item.tapbacks) && item.tapbacks.length > 0) {
+      merged.tapbacks = [...(Array.isArray(merged.tapbacks) ? merged.tapbacks : []), ...item.tapbacks];
+    }
+    if (item.raw) merged.raw = item.raw;
+  }
+  return merged;
+}
+
 function scheduleFlush(customerId: string, pending: PendingReply): void {
   clearTimeout(pending.timer);
   pending.timer = setTimeout(() => {
     pendingReplies.delete(customerId);
     const combinedText = pending.texts.join('\n');
-    runAgentTurn(customerId, combinedText, pending.mspConversationId, {}, { recordCustomerTurn: false })
+    runAgentTurn(customerId, combinedText, pending.mspConversationId, mergeMetadata(pending.metadatas), {
+      recordCustomerTurn: false,
+    })
       .catch((err) => console.error('[response-buffer] delayed agent turn failed:', err));
   }, Math.max(0, env.agentResponseBufferMs));
   pending.timer.unref?.();
@@ -48,6 +67,7 @@ async function enqueueBufferedAgentTurn(
   const existing = pendingReplies.get(customerId);
   if (existing) {
     existing.texts.push(customerText);
+    existing.metadatas.push(metadata);
     existing.mspConversationId = mspConversationId ?? existing.mspConversationId;
     scheduleFlush(customerId, existing);
     return;
@@ -56,6 +76,7 @@ async function enqueueBufferedAgentTurn(
   const pending: PendingReply = {
     timer: setTimeout(() => {}, 0),
     texts: [customerText],
+    metadatas: [metadata],
     mspConversationId,
   };
   pendingReplies.set(customerId, pending);

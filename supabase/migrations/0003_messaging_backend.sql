@@ -14,6 +14,51 @@ alter table public.conversations
 create index if not exists conversations_customer_id_idx
   on public.conversations (customer_id);
 
+create unique index if not exists conversations_customer_id_unique_idx
+  on public.conversations (customer_id)
+  where customer_id is not null;
+
+create or replace function public.upsert_conversation_active_agent(
+  p_customer_id text,
+  p_agent_id uuid
+)
+returns uuid
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_id uuid;
+begin
+  insert into public.conversations (
+    customer_id,
+    agent_id,
+    active_agent_id,
+    customer_name,
+    status,
+    messages
+  )
+  values (
+    p_customer_id,
+    p_agent_id,
+    p_agent_id,
+    'Apple Customer',
+    'Open',
+    '[]'::jsonb
+  )
+  on conflict (customer_id) where customer_id is not null
+  do update set
+    agent_id = excluded.agent_id,
+    active_agent_id = excluded.active_agent_id,
+    customer_name = coalesce(public.conversations.customer_name, excluded.customer_name),
+    status = 'Open',
+    messages = coalesce(public.conversations.messages, excluded.messages)
+  returning id into v_id;
+
+  return v_id;
+end;
+$$;
+
 -- 2) LOGIN 2FA codes issued by the app, verified by the backend.
 create table if not exists public.auth_codes (
   id          uuid primary key default gen_random_uuid(),

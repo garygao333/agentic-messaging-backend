@@ -8,7 +8,12 @@
  */
 import { getAgent } from '../supabase.js';
 import { chatReply, type HistoryTurn } from '../llm/reply.js';
-import { requestAgent, sendQuickReply, sendRichLink, sendText } from '../msp/send.js';
+import {
+  requestAgent,
+  sendQuickReply,
+  sendRichLink,
+  sendText,
+} from '../msp/send.js';
 import { appendTurn, loadState, type ConversationState } from './conversations.js';
 import {
   createHandoffSession,
@@ -16,9 +21,9 @@ import {
   logConversationEvent,
   updateHandoffSession,
 } from './handoff.js';
+import { runRuntimePlugins } from './plugins/registry.js';
 
-let reqCounter = 0;
-const nextRequestId = () => `amb-${Date.now()}-${reqCounter++}`;
+const nextRequestId = () => crypto.randomUUID();
 const CHERT_WEBSITE_URL = 'https://trychert.com';
 const CHERT_DEMO_URL = 'https://cal.com/team/chert/chert-call';
 const GENERAL_ACTIONS = ['Book demo', 'See API features', 'Check fit', 'Talk to founder'];
@@ -36,6 +41,13 @@ interface RichLinkPlan {
   title: string;
   body: string;
   reason: 'website' | 'demo';
+}
+
+function isChertAgent(agent: NonNullable<Awaited<ReturnType<typeof getAgent>>>): boolean {
+  const haystack = [agent.name, agent.company_name, agent.website, agent.use_case, agent.prompt]
+    .join(' ')
+    .toLowerCase();
+  return /\b(chert|trychert|agentic messaging)\b/.test(haystack);
 }
 
 /** Cheap heuristic for "get me a human". Decision: latest-wins, no LLM classifier for MVP. */
@@ -72,10 +84,27 @@ function messageKind(metadata: InboundTurnMetadata): string {
   const attachments = Array.isArray(metadata.attachments) ? metadata.attachments : [];
   const tapbacks = Array.isArray(metadata.tapbacks) ? metadata.tapbacks : [];
   if (attachments.length > 0) return 'attachment';
-  if (metadata.interactive) return 'quick_reply';
+  if (metadata.interactive) return interactiveKind(metadata.interactive);
   if (tapbacks.length > 0) return 'tapback';
   if (metadata.eventType === 'close') return 'close';
   return 'text';
+}
+
+function isTapbackOnly(customerText: string, metadata: InboundTurnMetadata): boolean {
+  const tapbacks = Array.isArray(metadata.tapbacks) ? metadata.tapbacks : [];
+  if (tapbacks.length > 0) return true;
+  return /^(loved|liked|disliked|laughed at|emphasized|questioned|removed a (heart|like|dislike|laugh|emphasis|question mark) from)\s+[“"][\s\S]+[”"]$/i.test(
+    customerText.trim(),
+  );
+}
+
+function interactiveKind(interactive: unknown): string {
+  const value = interactive as any;
+  if (value?.data?.listPicker || value?.listPicker) return 'list_picker';
+  if (value?.data?.event || value?.event) return 'time_picker';
+  if (value?.data?.payment || value?.payment) return 'apple_pay';
+  if (value?.data?.['quick-reply'] || value?.['quick-reply']) return 'quick_reply';
+  return 'quick_reply';
 }
 
 function hasAny(text: string, patterns: RegExp[]): boolean {
@@ -185,7 +214,8 @@ function shouldSendActionPlan(
   return true;
 }
 
-function richLinksFor(customerText: string): RichLinkPlan[] {
+function richLinksFor(agent: NonNullable<Awaited<ReturnType<typeof getAgent>>>, customerText: string): RichLinkPlan[] {
+  if (!isChertAgent(agent)) return [];
   const text = normalizeText(customerText);
   const links: RichLinkPlan[] = [];
   const wantsDemoLink = hasAny(text, [
@@ -324,8 +354,6 @@ export async function runAgentTurn(
     : await loadState(customerId, mspConversationId);
 
   if (isHumanPaused(state)) {
-    const waiting =
-      'A team member is already taking a look. Hang tight - we will follow up here soon.';
     await logConversationEvent({
       conversationId: state.id,
       agentId: state.activeAgentId,
@@ -333,13 +361,12 @@ export async function runAgentTurn(
       mspConversationId,
       eventType: 'bot_suppressed_handoff_active',
       actor: 'system',
-      body: waiting,
+      body: customerText,
       payload: {
         conversationStatus: state.status,
         handoffStatus: state.activeHandoffStatus,
       },
     });
-    await sendText(customerId, waiting);
     return;
   }
 
@@ -359,6 +386,19 @@ export async function runAgentTurn(
   const history: HistoryTurn[] = shouldRecord
     ? [...state.messages, { role: 'customer', text: customerText }]
     : state.messages;
+
+  if (isTapbackOnly(customerText, metadata)) {
+    await logConversationEvent({
+      conversationId: state.id,
+      agentId,
+      customerId,
+      mspConversationId,
+      eventType: 'bot_suppressed_tapback',
+      actor: 'system',
+      body: customerText,
+    });
+    return;
+  }
 
   // Human handoff: create/reuse a durable session, escalate in 1440, tell the customer.
   if (wantsHuman(customerText)) {
@@ -417,6 +457,19 @@ export async function runAgentTurn(
     return;
   }
 
+  const pluginHandled = await runRuntimePlugins({
+    agent,
+    customerId,
+    customerText,
+    conversationId: state.id,
+    agentId,
+    mspConversationId,
+    customerName: state.customerName,
+    history,
+    nextRequestId,
+  });
+  if (pluginHandled) return;
+
   const reply = await chatReply({ prompt: agent.prompt, guardrails: agent.guardrails }, history);
 
   const actionPlan = inferActionPlan(customerText, history);
@@ -427,7 +480,7 @@ export async function runAgentTurn(
     configuredActions.length > 0 && (actionPlan.intent === 'intro' || actionPlan.intent === 'menu');
   const actions = uniqueActions(useConfiguredActions ? configuredActions : actionPlan.actions);
   const sendActions = shouldSendActionPlan({ ...actionPlan, actions }, history, metadata);
-  const richLinks = richLinksFor(customerText);
+  const richLinks = richLinksFor(agent, customerText);
 
   await sendText(customerId, reply);
   await logConversationEvent({

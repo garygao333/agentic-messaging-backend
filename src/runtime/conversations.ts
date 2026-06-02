@@ -36,6 +36,7 @@ export interface ConversationState {
   id: string | null; // null when persistence unavailable
   messages: HistoryTurn[];
   activeAgentId: string | null;
+  customerName: string | null;
   status: 'Open' | 'Needs Human' | 'Resolved' | null;
   mspConversationId: string | null;
   activeHandoffStatus: HandoffStatus | null;
@@ -77,29 +78,14 @@ export async function setActiveAgent(customerId: string, agentId: string): Promi
   memRouting.set(customerId, agentId);
   if (!(await ready())) return;
   try {
-    const { data } = await supabase
-      .from('conversations')
-      .select('id')
-      .eq('customer_id', customerId)
-      .maybeSingle();
-    if (data?.id) {
-      await supabase
-        .from('conversations')
-        .update({ active_agent_id: agentId, agent_id: agentId, status: 'Open' })
-        .eq('id', data.id);
-      await returnActiveHandoffsToAgent(data.id);
-    } else {
-      await supabase.from('conversations').insert({
-        agent_id: agentId,
-        active_agent_id: agentId,
-        customer_id: customerId,
-        customer_name: 'Apple Customer',
-        status: 'Open',
-        messages: [],
-      });
-    }
+    const { data, error } = await supabase.rpc('upsert_conversation_active_agent', {
+      p_customer_id: customerId,
+      p_agent_id: agentId,
+    });
+    if (error) throw error;
+    if (typeof data === 'string') await returnActiveHandoffsToAgent(data);
   } catch (err) {
-    console.warn('[conversations] setActiveAgent persist failed:', err);
+    console.warn('[conversations] setActiveAgent atomic upsert failed:', err);
   }
 }
 
@@ -114,6 +100,7 @@ export async function loadState(
       id: null,
       messages: [],
       activeAgentId: memAgent,
+      customerName: null,
       status: null,
       mspConversationId: mspConversationId ?? null,
       activeHandoffStatus: null,
@@ -122,7 +109,7 @@ export async function loadState(
   try {
     const { data } = await supabase
       .from('conversations')
-      .select('id, messages, active_agent_id, status')
+      .select('id, messages, active_agent_id, customer_name, status')
       .eq('customer_id', customerId)
       .maybeSingle();
     if (!data) {
@@ -130,6 +117,7 @@ export async function loadState(
         id: null,
         messages: [],
         activeAgentId: memAgent,
+        customerName: null,
         status: null,
         mspConversationId: mspConversationId ?? null,
         activeHandoffStatus: null,
@@ -142,6 +130,7 @@ export async function loadState(
       id: data.id,
       messages: rowsToHistory(data.messages),
       activeAgentId: data.active_agent_id ?? memAgent,
+      customerName: data.customer_name ?? null,
       status: data.status ?? null,
       mspConversationId: mspConversationId ?? null,
       activeHandoffStatus: await loadActiveHandoffStatus(data.id),
@@ -152,6 +141,7 @@ export async function loadState(
       id: null,
       messages: [],
       activeAgentId: memAgent,
+      customerName: null,
       status: null,
       mspConversationId: mspConversationId ?? null,
       activeHandoffStatus: null,
