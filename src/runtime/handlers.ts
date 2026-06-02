@@ -10,6 +10,7 @@ import { sendAppClip, sendText } from '../msp/send.js';
 import { parseCommand } from './commands.js';
 import { setActiveAgent } from './conversations.js';
 import type { InboundTurnMetadata } from './agentRuntime.js';
+import { touchCustomerProfile } from './customerProfile.js';
 import { verifyLoginCode } from './login.js';
 import { bufferAgentTurn } from './responseBuffer.js';
 
@@ -101,6 +102,7 @@ export async function handleInbound(
 ): Promise<void> {
   // An interactive selection with no text == a quick-reply tap; treat the
   // selected label as the customer's message to the active agent.
+  await touchCustomerProfile(customerId, metadata.raw);
   const effectiveText = text ?? selections[0] ?? tapbackSummary(metadata.tapbacks) ?? '';
   const cmd = parseCommand(effectiveText);
 
