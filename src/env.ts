@@ -44,6 +44,13 @@ export const env = {
   applePayFallbackUrl: process.env.APPLE_PAY_FALLBACK_URL ?? '',
   applePayMerchantSessionJson: process.env.APPLE_PAY_MERCHANT_SESSION_JSON ?? '',
 
+  // Super admins skip Apple Messages verification and land straight on the
+  // dashboard. Comma-separated emails; defaults to ian@trychert.com only.
+  superAdminEmails: (process.env.SUPER_ADMIN_EMAILS ?? 'ian@trychert.com')
+    .split(',')
+    .map((e) => e.trim().toLowerCase())
+    .filter(Boolean),
+
   appSharedToken: process.env.APP_SHARED_TOKEN ?? '',
   requireAppAuth:
     process.env.REQUIRE_APP_AUTH === 'true' || process.env.NODE_ENV === 'production',

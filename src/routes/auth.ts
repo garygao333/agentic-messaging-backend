@@ -1,10 +1,17 @@
 import { Hono } from 'hono';
 import { supabase } from '../supabase.js';
+import { env } from '../env.js';
 
 export const auth = new Hono();
 
 const genCode = () => String(Math.floor(100000 + Math.random() * 900000));
 const loginBody = (code: string) => `LOGIN ${code}`;
+
+/** Allowlisted super admins bypass Apple Messages verification entirely. */
+function isSuperAdmin(user: { email?: string | null } | null): boolean {
+  const email = (user?.email ?? '').toLowerCase();
+  return Boolean(email) && env.superAdminEmails.includes(email);
+}
 
 function bearerToken(header?: string) {
   return header?.replace(/^Bearer\s+/i, '').trim() || '';
@@ -52,13 +59,50 @@ async function getIdentity(workspaceUserId: string) {
   return mapIdentity(data);
 }
 
+/**
+ * Provision a "connected" identity for a super admin so they skip Apple
+ * Messages verification. Never clobbers an existing (real) identity — only
+ * fills in a sentinel when none exists.
+ */
+async function ensureSuperAdminIdentity(user: { id: string; email?: string | null }) {
+  const existing = await getIdentity(user.id);
+  if (existing) return existing;
+
+  const now = new Date().toISOString();
+  const { data, error } = await supabase
+    .from('workspace_message_identities')
+    .upsert(
+      {
+        workspace_user_id: user.id,
+        customer_id: `urn:superadmin:${user.id}`,
+        display_handle: user.email ?? 'Super Admin',
+        verified_at: now,
+        last_seen_at: now,
+        updated_at: now,
+      },
+      { onConflict: 'workspace_user_id' },
+    )
+    .select('id, customer_id, display_handle, verified_at, last_seen_at')
+    .maybeSingle();
+
+  if (error) {
+    console.warn('[auth] super-admin identity auto-provision skipped:', error);
+    return existing;
+  }
+  return mapIdentity(data);
+}
+
 auth.get('/auth/messages/identity', async (c) => {
   const { user, response } = await requireWorkspaceUser(c);
   if (response) return response;
 
+  const superAdmin = isSuperAdmin(user);
   try {
-    const identity = await getIdentity(user!.id);
-    return c.json({ connected: Boolean(identity), identity });
+    let identity = await getIdentity(user!.id);
+    if (!identity && superAdmin) {
+      identity = await ensureSuperAdminIdentity(user!);
+    }
+    return c.json({ connected: Boolean(identity), identity, superAdmin });
   } catch (error) {
     console.error('[auth] failed to load Messages identity:', error);
     return c.json({ error: 'could not load Messages identity' }, 500);
@@ -122,6 +166,12 @@ auth.post('/auth/messages/start', async (c) => {
 auth.post('/auth/messages/verify', async (c) => {
   const { user, response } = await requireWorkspaceUser(c);
   if (response) return response;
+
+  // Super admins are pre-verified — no Apple Messages round-trip required.
+  if (isSuperAdmin(user)) {
+    const identity = await ensureSuperAdminIdentity(user!).catch(() => null);
+    return c.json({ ok: true, status: 'verified', identity, superAdmin: true });
+  }
 
   const body = await c.req.json().catch(() => ({}));
   const code = String(body.code ?? '').trim();
