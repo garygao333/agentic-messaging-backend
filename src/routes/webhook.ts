@@ -19,7 +19,121 @@ interface DebugEntry {
     text: string | null;
     selections: string[];
   };
-  raw: unknown;
+  fieldMap: WebhookFieldMap;
+}
+
+interface WebhookFieldMap {
+  topLevelKeys: string[];
+  identityCandidates: {
+    senderIds: string[];
+    conversationIds: string[];
+    phoneLike: string[];
+    emailLike: string[];
+    displayNames: string[];
+  };
+  notablePaths: string[];
+}
+
+function pathLooksLike(path: string, terms: string[]): boolean {
+  const normalized = path.toLowerCase().replace(/[^a-z0-9]/g, '');
+  return terms.some((term) => normalized.includes(term));
+}
+
+function valueLooksLikePhone(value: unknown): boolean {
+  if (typeof value !== 'string') return false;
+  const digits = value.replace(/\D/g, '');
+  return digits.length >= 7 && /^[+\d().\-\s]+$/.test(value);
+}
+
+function valueLooksLikeEmail(value: unknown): boolean {
+  return typeof value === 'string' && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value);
+}
+
+function summarizeValue(value: unknown): string {
+  if (typeof value !== 'string') return typeof value;
+  if (value.startsWith('urn:mbid:')) return `urn:mbid:${value.slice(9, 21)}...`;
+  if (valueLooksLikeEmail(value)) {
+    const [local, domain] = value.split('@');
+    return `${(local ?? '').slice(0, 2)}***@${domain ?? 'unknown'}`;
+  }
+  if (valueLooksLikePhone(value)) {
+    const digits = value.replace(/\D/g, '');
+    return `phone:***${digits.slice(-4)}`;
+  }
+  return `text:${value.length}`;
+}
+
+function pushCandidate(list: string[], path: string, value: unknown): void {
+  const item = `${path}=${summarizeValue(value)}`;
+  if (!list.includes(item)) list.push(item);
+}
+
+function inspectWebhookFields(raw: unknown): WebhookFieldMap {
+  const topLevelKeys =
+    raw && typeof raw === 'object' && !Array.isArray(raw)
+      ? Object.keys(raw as Record<string, unknown>).sort()
+      : [];
+  const fieldMap: WebhookFieldMap = {
+    topLevelKeys,
+    identityCandidates: {
+      senderIds: [],
+      conversationIds: [],
+      phoneLike: [],
+      emailLike: [],
+      displayNames: [],
+    },
+    notablePaths: [],
+  };
+  const notableTerms = [
+    'source',
+    'sender',
+    'from',
+    'customer',
+    'conversation',
+    'phone',
+    'mobile',
+    'msisdn',
+    'email',
+    'apple',
+    'handle',
+    'name',
+    'destination',
+  ];
+
+  function visit(value: unknown, path: string, depth: number): void {
+    if (depth > 7 || value === null || value === undefined) return;
+    if (Array.isArray(value)) {
+      value.slice(0, 10).forEach((item, index) => visit(item, `${path}[${index}]`, depth + 1));
+      return;
+    }
+    if (typeof value !== 'object') {
+      if (!pathLooksLike(path, notableTerms) && !valueLooksLikePhone(value) && !valueLooksLikeEmail(value)) return;
+      if (fieldMap.notablePaths.length < 80) fieldMap.notablePaths.push(`${path}:${typeof value}`);
+      if (pathLooksLike(path, ['source', 'sender', 'from', 'customerid', 'abcuserid']) || String(value).startsWith('urn:mbid:')) {
+        pushCandidate(fieldMap.identityCandidates.senderIds, path, value);
+      }
+      if (pathLooksLike(path, ['conversationid', 'conversation'])) {
+        pushCandidate(fieldMap.identityCandidates.conversationIds, path, value);
+      }
+      if (pathLooksLike(path, ['phone', 'mobile', 'msisdn']) || valueLooksLikePhone(value)) {
+        pushCandidate(fieldMap.identityCandidates.phoneLike, path, value);
+      }
+      if (pathLooksLike(path, ['email', 'appleid']) || valueLooksLikeEmail(value)) {
+        pushCandidate(fieldMap.identityCandidates.emailLike, path, value);
+      }
+      if (pathLooksLike(path, ['displayname', 'customername', 'sendername', 'fromname', 'handle', 'name'])) {
+        pushCandidate(fieldMap.identityCandidates.displayNames, path, value);
+      }
+      return;
+    }
+
+    for (const [key, child] of Object.entries(value as Record<string, unknown>)) {
+      visit(child, path ? `${path}.${key}` : key, depth + 1);
+    }
+  }
+
+  visit(raw, '', 0);
+  return fieldMap;
 }
 const recentWebhooks: DebugEntry[] = [];
 function record(e: DebugEntry) {
@@ -95,6 +209,7 @@ webhook.post('/webhook', async (c) => {
   const evt = parseInbound(body);
   const event = c.req.header('X-Webhook-Event') ?? evt.eventType;
   const conversationId = evt.conversationId ?? conversationIdFromHeaders(c);
+  const fieldMap = inspectWebhookFields(body);
 
   record({
     at: new Date().toISOString(),
@@ -106,9 +221,20 @@ webhook.post('/webhook', async (c) => {
       text: evt.text,
       selections: evt.selections,
     },
-    raw: body,
+    fieldMap,
   });
-  console.log(`[webhook] event=${event} customer=${evt.customerId ?? 'none'} text=${JSON.stringify(evt.text)}`);
+  console.log(`[webhook] event=${event} customer=${evt.customerId ?? 'none'} textPresent=${Boolean(evt.text)}`);
+  console.log(
+    `[webhook:fields] ${JSON.stringify({
+      event,
+      topLevelKeys: fieldMap.topLevelKeys,
+      senderIds: fieldMap.identityCandidates.senderIds,
+      conversationIds: fieldMap.identityCandidates.conversationIds,
+      phoneLike: fieldMap.identityCandidates.phoneLike,
+      emailLike: fieldMap.identityCandidates.emailLike,
+      displayNames: fieldMap.identityCandidates.displayNames,
+    })}`,
+  );
 
   // Drive the agent on any customer-originated message that carries content.
   // NOTE: 1440 uses event_type "text" for text messages (not "message.received"

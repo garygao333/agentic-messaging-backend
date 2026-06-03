@@ -83,6 +83,71 @@ function operatorNameFromBody(body: any): string | null {
   return cleanText(body?.operatorName) ?? cleanText(body?.assignedOperator);
 }
 
+function deleteAgentsFromQuery(value: string | undefined): boolean {
+  return value !== 'false' && value !== '0';
+}
+
+async function deleteWhere(table: string, column: string, value: string): Promise<number | null> {
+  const { count, error } = await supabase
+    .from(table)
+    .delete({ count: 'exact' })
+    .eq(column, value);
+  if (error) {
+    warnOnce(`delete ${table}`, error);
+    return null;
+  }
+  return count ?? 0;
+}
+
+async function deleteWhereIn(table: string, column: string, values: string[]): Promise<number | null> {
+  if (!values.length) return 0;
+  const { count, error } = await supabase
+    .from(table)
+    .delete({ count: 'exact' })
+    .in(column, values);
+  if (error) {
+    warnOnce(`delete ${table} by ${column}`, error);
+    return null;
+  }
+  return count ?? 0;
+}
+
+async function agentIdsForSender(customerId: string): Promise<string[]> {
+  const { data, error } = await supabase
+    .from('conversations')
+    .select('agent_id, active_agent_id')
+    .eq('customer_id', customerId);
+  if (error) {
+    warnOnce('sender linked agents', error);
+    return [];
+  }
+  return [
+    ...new Set(
+      (data ?? [])
+        .flatMap((row: any) => [cleanText(row.agent_id), cleanText(row.active_agent_id)])
+        .filter((id): id is string => Boolean(id)),
+    ),
+  ];
+}
+
+async function resetSenderFootprint(customerId: string, options: { deleteAgents: boolean }) {
+  const linkedAgentIds = options.deleteAgents ? await agentIdsForSender(customerId) : [];
+  const deleted: Record<string, number | null> = {};
+  deleted.appointments = await deleteWhere('appointments', 'customer_id', customerId);
+  deleted.handoffSessions = await deleteWhere('handoff_sessions', 'customer_id', customerId);
+  deleted.conversationEvents = await deleteWhere('conversation_events', 'customer_id', customerId);
+  deleted.conversations = await deleteWhere('conversations', 'customer_id', customerId);
+  if (options.deleteAgents) {
+    deleted.linkedAgents = await deleteWhereIn('agents', 'id', linkedAgentIds);
+    deleted.agentsByCustomerId = await deleteWhere('agents', 'created_by_customer_id', customerId);
+  }
+  deleted.setups = await deleteWhere('setups', 'customer_id', customerId);
+  deleted.customerProfiles = await deleteWhere('customer_profiles', 'customer_id', customerId);
+  deleted.workspaceMessageIdentities = await deleteWhere('workspace_message_identities', 'customer_id', customerId);
+  deleted.authCodes = await deleteWhere('auth_codes', 'customer_id', customerId);
+  return deleted;
+}
+
 function noteFromBody(body: any): string | null {
   return cleanText(body?.note) ?? cleanText(body?.reason);
 }
@@ -1019,6 +1084,21 @@ operator.get('/operator/customer-profiles/:customerId', async (c) => {
       createdAt: data?.created_at ?? null,
       updatedAt: data?.updated_at ?? null,
     },
+  });
+});
+
+operator.delete('/operator/customer-profiles/:customerId', async (c) => {
+  const customerId = cleanText(c.req.param('customerId'));
+  if (!customerId) return c.json({ error: 'customerId is required' }, 400);
+
+  const deleted = await resetSenderFootprint(customerId, {
+    deleteAgents: deleteAgentsFromQuery(c.req.query('deleteAgents')),
+  });
+
+  return c.json({
+    ok: true,
+    customerId,
+    deleted,
   });
 });
 

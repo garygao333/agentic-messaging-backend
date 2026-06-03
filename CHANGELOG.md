@@ -1,5 +1,31 @@
 # Changelog
 
+## 0.1.5 - 2026-06-03
+
+### Changed
+- Added masked webhook field-shape diagnostics so Railway logs can show whether
+  1440 provided sender, phone-like, email-like, or display-name-like fields
+  without dumping raw payloads or message text.
+- Added App Clip self-identification support to setup completion and stores
+  name/phone/email context as `self_reported_unverified` customer profile data.
+- Tagged provider-inferred webhook identity separately from App Clip
+  self-identified profile context.
+- Added an operator reset endpoint for one-number testing that clears a
+  sender's profile, conversations, handoffs, appointments, setup bindings,
+  workspace identity, auth codes, and linked generated agents where available.
+
+### Fixed
+- Avoid storing empty App Clip identity objects when the customer skips the
+  optional identification step.
+- Prevent self-reported identity from blindly overwriting existing non-empty
+  profile fields unless the previous value was also self-reported.
+- Made sender reset tolerate older Supabase schemas that do not yet have the
+  App Clip setup provenance columns.
+
+### Synced With App
+- Matches app `1.0.5`, which adds the optional identity step and flow/test-case
+  documentation.
+
 ## 0.1.4 - 2026-06-03
 
 ### Changed

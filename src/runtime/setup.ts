@@ -2,6 +2,7 @@ import { generateAgentConfig, type AgentConfig } from '../llm/generate.js';
 import { sendAppClip, sendQuickReply, sendText } from '../msp/send.js';
 import { supabase } from '../supabase.js';
 import { appendTurn, loadState, setActiveAgent } from './conversations.js';
+import { upsertCustomerIdentity, type CustomerIdentityInput } from './customerProfile.js';
 import { logConversationEvent } from './handoff.js';
 import { createHash, randomUUID } from 'node:crypto';
 
@@ -27,6 +28,7 @@ export interface SetupDraftInput {
   guardrails?: string | null;
   welcomeMessage?: string | null;
   suggestedActions?: unknown;
+  customerIdentity?: CustomerIdentityInput;
   setupContext?: Record<string, unknown>;
   completionPayload?: Record<string, unknown>;
 }
@@ -199,6 +201,7 @@ function withSetupFallback(input: SetupDraftInput, setup: any): SetupDraftInput 
     tone: input.tone ?? setup.tone,
     handoffDestination: input.handoffDestination ?? setup.handoff_destination,
     testUsers: input.testUsers ?? setup.test_users,
+    customerIdentity: input.customerIdentity,
     setupContext: input.setupContext ?? jsonObject(setup.setup_context),
     completionPayload: input.completionPayload ?? jsonObject(setup.completion_payload),
   };
@@ -229,7 +232,10 @@ function setupPatch(input: SetupDraftInput, customerId: string, agentId?: string
     test_users: testUsersFor(input, customerId),
     tone: clean(input.tone),
     handoff_destination: clean(input.handoffDestination),
-    setup_context: jsonObject(input.setupContext),
+    setup_context: {
+      ...jsonObject(input.setupContext),
+      ...(input.customerIdentity ? { customerIdentity: input.customerIdentity } : {}),
+    },
     completion_payload: jsonObject(input.completionPayload),
     generated_config: config ?? {},
     status: agentId ? 'completed' : 'started',
@@ -456,6 +462,9 @@ export async function completeAppClipSetup(
   }
 
   const mergedInput = withSetupFallback(trustedInput, setup);
+  if (mergedInput.customerIdentity) {
+    await upsertCustomerIdentity(customerId, mergedInput.customerIdentity);
+  }
   const setupId = await upsertSetup(mergedInput, customerId, uuidOrNull(mergedInput.agentId));
   const latestSetup = await loadSetup(setupId);
   const latestInput = withSetupFallback(mergedInput, latestSetup ?? setup);

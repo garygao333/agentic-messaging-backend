@@ -18,11 +18,35 @@ function bool(body: any, key: string, fallback: boolean): boolean {
   return typeof body?.[key] === 'boolean' ? body[key] : fallback;
 }
 
+function customerIdentityInput(body: any, identity: any) {
+  const customerIdentity = {
+    displayName:
+      text(body, 'displayName', 'display_name', 'customerName', 'customer_name') ??
+      text(identity, 'displayName', 'display_name', 'name'),
+    phone:
+      text(body, 'phone', 'phoneNumber', 'phone_number') ??
+      text(identity, 'phone', 'phoneNumber', 'phone_number'),
+    appleId:
+      text(body, 'appleId', 'apple_id') ??
+      text(identity, 'appleId', 'apple_id'),
+    email:
+      text(body, 'email', 'emailAddress', 'email_address') ??
+      text(identity, 'email', 'emailAddress', 'email_address'),
+  };
+  return Object.values(customerIdentity).some(Boolean) ? customerIdentity : undefined;
+}
+
 function setupInput(body: any) {
   const setup = body?.setup && typeof body.setup === 'object' ? body.setup : {};
   const agent = body?.agent && typeof body.agent === 'object' ? body.agent : {};
   const config = body?.config && typeof body.config === 'object' ? body.config : {};
   const brief = body?.brief && typeof body.brief === 'object' ? body.brief : {};
+  const identity =
+    body?.identity && typeof body.identity === 'object'
+      ? body.identity
+      : brief?.identity && typeof brief.identity === 'object'
+        ? brief.identity
+        : {};
   const companyNameOrWebsite = text(brief, 'companyNameOrWebsite', 'company_name_or_website');
 
   return {
@@ -88,6 +112,7 @@ function setupInput(body: any) {
       config.suggested_actions ??
       agent.suggestedActions ??
       agent.suggested_actions,
+    customerIdentity: customerIdentityInput(body, identity),
     setupContext: {
       ...(body.context && typeof body.context === 'object' ? body.context : {}),
       ...(body.setupContext && typeof body.setupContext === 'object' ? body.setupContext : {}),

@@ -1,7 +1,7 @@
 # Agentic Messaging Direction Plan
 
-**Version:** 0.1.3
-**Synced app version:** `agentic-messaging` 1.0.3
+**Version:** 0.1.5
+**Synced app version:** `agentic-messaging` 1.0.5
 **Date:** 2026-06-03
 
 ## Product Direction
@@ -18,6 +18,7 @@ There is no separate "user" in the first-run flow. The only primary actor is the
 4. App Clip collects the minimum brief:
    - company website or business name
    - what the agent should do
+   - optional self-identified name plus phone/email
    - tone/business context
    - optional handoff instruction
 5. App Clip creates the agent draft through the shared app/backend model.
@@ -31,6 +32,7 @@ There is no separate "user" in the first-run flow. The only primary actor is the
 - Remove "test users" as the primary deploy gate for the demo flow.
 - Treat `START_AGENT_SETUP` and first inbound plain text as possible setup starts.
 - Treat App Clip setup completion as the deployment event for that customer thread.
+- Treat phone, email, and name as self-reported unless a later verification flow proves them.
 - Keep the dashboard/mobile app as a later management surface, not the first product surface.
 - Keep operator inbox/handoff capabilities, but they are secondary demo support tools.
 
@@ -38,6 +40,8 @@ There is no separate "user" in the first-run flow. The only primary actor is the
 
 - Parse inbound customer messages from 1440 and keep responding quickly.
 - Maintain `customer_profiles` for every inbound sender.
+- Capture webhook field-shape diagnostics without logging full message bodies or raw payloads.
+- Store App Clip self-identification as unverified profile context for the opaque sender id.
 - Maintain `conversations.customer_id` and `conversations.active_agent_id` as the core routing state.
 - Send setup App Clips when a customer has no active agent.
 - Provide a backend endpoint or command path for App Clip setup completion that:
