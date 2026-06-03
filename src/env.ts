@@ -42,6 +42,11 @@ export const env = {
   mspBusinessId: req('MSP_BUSINESS_ID'),
   mspWebhookSecret: process.env.MSP_WEBHOOK_SECRET ?? '',
 
+  appUrl:
+    (process.env.APP_URL ?? process.env.EXPO_PUBLIC_APP_URL ?? 'https://agenticmessaging.vercel.app')
+      .trim()
+      .replace(/\/$/, ''),
+
   applePayMerchantIdentifier: process.env.APPLE_PAY_MERCHANT_IDENTIFIER ?? '',
   applePayPaymentGatewayUrl: process.env.APPLE_PAY_PAYMENT_GATEWAY_URL ?? '',
   applePayFallbackUrl: process.env.APPLE_PAY_FALLBACK_URL ?? '',

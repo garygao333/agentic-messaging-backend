@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.1.7 - 2026-06-03
+
+### Fixed
+- Added a web setup-link fallback when 1440 rejects `messageType: app-clip`
+  because the Apple Business account has no App Clip configured. Customers can
+  still open `/appclip` from Messages and complete onboarding with the same
+  setup id, setup token, and Messages sender id.
+
 ## 0.1.6 - 2026-06-03
 
 ### Fixed

@@ -1,4 +1,5 @@
 import { generateAgentConfig, type AgentConfig } from '../llm/generate.js';
+import { env } from '../env.js';
 import { sendAppClip, sendQuickReply, sendText } from '../msp/send.js';
 import { supabase } from '../supabase.js';
 import { appendTurn, loadState, setActiveAgent } from './conversations.js';
@@ -114,6 +115,11 @@ function jsonObject(value: unknown): Record<string, unknown> {
 
 function hashSetupToken(token: string): string {
   return createHash('sha256').update(token).digest('hex');
+}
+
+function setupLink(params: Record<string, string>): string {
+  const query = new URLSearchParams(params);
+  return `${env.appUrl}/appclip?${query.toString()}`;
 }
 
 const unsupportedColumns = new Map<string, Set<string>>();
@@ -500,7 +506,16 @@ export async function startAppClipSetup(input: {
     return { setupId, appClipSent: true };
   } catch (err) {
     console.warn('[setup] App Clip send failed:', err);
-    await sendText(input.customerId, 'I created your setup session, but the App Clip did not appear. Please text START_AGENT_SETUP to retry.');
+    const url = setupLink({
+      setup_id: setupId,
+      setup_token: setupToken,
+      customer_id: input.customerId,
+      ...(input.mspConversationId ? { msp_conversation_id: input.mspConversationId } : {}),
+    });
+    await sendText(
+      input.customerId,
+      `The App Clip card is not configured for this business account yet. Open this setup link instead: ${url}`,
+    );
     return { setupId, appClipSent: false };
   }
 }
