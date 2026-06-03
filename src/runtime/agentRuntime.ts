@@ -119,7 +119,15 @@ function normalizeText(text: string): string {
 function uniqueActions(actions: string[]): string[] {
   const seen = new Set<string>();
   return actions
-    .map((action) => action.trim())
+    .map((action) =>
+      action
+        .replace(/[\u0000-\u001f\u007f]/g, '')
+        .replace(/\s+/g, ' ')
+        .replace(/^["'`]+|["'`.!?]+$/g, '')
+        .trim()
+        .slice(0, 24)
+        .trim(),
+    )
     .filter((action) => {
       const key = action.toLowerCase();
       if (!action || seen.has(key)) return false;
@@ -476,7 +484,7 @@ export async function runAgentTurn(
   });
   if (pluginHandled) return;
 
-  const reply = await chatReply({ prompt: agent.prompt, guardrails: agent.guardrails }, history);
+  const reply = await chatReply(agent, history);
 
   const actionPlan = inferActionPlan(customerText, history);
   const configuredActions = Array.isArray(agent.suggested_actions)

@@ -108,8 +108,21 @@ function setupInput(body: any) {
 
 async function handleComplete(c: any) {
   const body = await c.req.json().catch(() => ({}));
-  const input = setupInput(body);
+  const rawInput = setupInput(body);
   const isPublicAppClip = c.req.path.startsWith('/app-clip/');
+  const input = isPublicAppClip
+    ? {
+        ...rawInput,
+        customerId: null,
+        mspConversationId: null,
+        agentId: null,
+        testUsers: undefined,
+        prompt: null,
+        guardrails: null,
+        welcomeMessage: null,
+        suggestedActions: undefined,
+      }
+    : rawInput;
   if (!input.customerId && !input.setupId) {
     return c.json({ error: 'customerId or setupId is required' }, 400);
   }
@@ -119,8 +132,8 @@ async function handleComplete(c: any) {
 
   try {
     const result = await completeAppClipSetup(input, {
-      sendConfirmation: bool(body, 'sendConfirmation', true),
-      forceGenerate: bool(body, 'forceGenerate', false),
+      sendConfirmation: isPublicAppClip ? true : bool(body, 'sendConfirmation', true),
+      forceGenerate: isPublicAppClip ? true : bool(body, 'forceGenerate', false),
       requireExistingSetup: isPublicAppClip,
       requireSetupToken: isPublicAppClip,
       trustRequestBinding: !isPublicAppClip,
@@ -130,11 +143,14 @@ async function handleComplete(c: any) {
   } catch (err) {
     console.error('[setup-route] setup completion failed:', err);
     const message = err instanceof Error ? err.message : 'setup completion failed';
-    const status = /token|customer did not match/i.test(message)
-      ? 401
-      : /customer_id|required/i.test(message)
-        ? 400
-        : 500;
+    const status =
+      /already completed/i.test(message)
+        ? 409
+        : /token|customer did not match/i.test(message)
+          ? 401
+          : /customer_id|required/i.test(message)
+            ? 400
+            : 500;
     return c.json({ error: message }, status);
   }
 }

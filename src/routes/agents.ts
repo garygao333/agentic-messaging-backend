@@ -17,13 +17,18 @@ agents.use('/agents/*', requireAppAuth);
 agents.post('/agents/generate', async (c) => {
   const body = await c.req.json().catch(() => ({}));
   const config = await generateAgentConfig({
-    name: body.name,
-    companyName: body.companyName,
+    name: body.name ?? body.agentName ?? body.agent_name,
+    companyName: body.companyName ?? body.company_name ?? body.businessName ?? body.business_name,
     website: body.website,
-    businessType: body.businessType,
-    useCase: body.useCase,
+    businessType: body.businessType ?? body.business_type,
+    useCase: body.useCase ?? body.use_case,
+    tone: body.tone,
     integrations: body.integrations,
-    handoffDestination: body.handoffDestination,
+    handoffDestination:
+      body.handoffDestination ??
+      body.handoff_destination ??
+      body.handoffInstruction ??
+      body.handoff_instruction,
   });
   return c.json(config);
 });
@@ -42,6 +47,6 @@ agents.post('/agents/:id/preview-message', async (c) => {
       }))
     : [];
 
-  const reply = await chatReply({ prompt: agent.prompt, guardrails: agent.guardrails }, history);
+  const reply = await chatReply(agent, history);
   return c.json({ reply });
 });

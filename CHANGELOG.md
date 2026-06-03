@@ -1,5 +1,28 @@
 # Changelog
 
+## 0.1.4 - 2026-06-03
+
+### Changed
+- Strengthened App Clip-generated prompts for same-thread Apple Messages
+  activation, business grounding, concrete handoff rules, and concise tappable
+  suggested replies.
+- Hardened live reply prompts and reply cleanup so agents avoid unsupported
+  booking/refund/email/ticket claims and stay short enough for Messages.
+- Sent generated suggested actions after App Clip completion as a best-effort
+  quick reply in the activated thread.
+
+### Fixed
+- Made public App Clip setup completion one-time by rejecting completed setups,
+  stripping public prompt/config overrides, forcing server-side generation, and
+  clearing setup token hashes after successful activation.
+- Require a Supabase service-role key in production so the backend cannot boot
+  against authenticated RLS with an anon key.
+- Sanitized stored and runtime quick-reply labels before they reach 1440 MSP.
+
+### Synced With App
+- Matches app `1.0.4`, which clarifies sender/thread UX and fails closed when a
+  bound App Clip cannot reach the backend.
+
 ## 0.1.3 - 2026-06-03
 
 ### Changed

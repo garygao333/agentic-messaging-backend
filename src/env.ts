@@ -17,6 +17,9 @@ if (!supabaseKey) {
   throw new Error('Set SUPABASE_SERVICE_KEY (preferred) or SUPABASE_ANON_KEY');
 }
 if (!SUPABASE_SERVICE_KEY) {
+  if (process.env.NODE_ENV === 'production') {
+    throw new Error('SUPABASE_SERVICE_KEY is required in production');
+  }
   console.warn(
     '[env] WARNING: running on the Supabase ANON key (RLS-permissive MVP). ' +
       'Set SUPABASE_SERVICE_KEY before tightening RLS / production.',

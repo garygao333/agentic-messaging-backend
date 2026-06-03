@@ -1,5 +1,5 @@
 import { generateAgentConfig, type AgentConfig } from '../llm/generate.js';
-import { sendAppClip, sendText } from '../msp/send.js';
+import { sendAppClip, sendQuickReply, sendText } from '../msp/send.js';
 import { supabase } from '../supabase.js';
 import { appendTurn, loadState, setActiveAgent } from './conversations.js';
 import { logConversationEvent } from './handoff.js';
@@ -76,6 +76,29 @@ function stringArray(value: unknown): string[] {
   return Array.isArray(value) ? value.map(String).map((item) => item.trim()).filter(Boolean) : [];
 }
 
+function cleanSuggestedAction(value: unknown): string {
+  return String(value ?? '')
+    .replace(/[\u0000-\u001f\u007f]/g, '')
+    .replace(/\s+/g, ' ')
+    .replace(/^["'`]+|["'`.!?]+$/g, '')
+    .trim()
+    .slice(0, 24)
+    .trim();
+}
+
+function suggestedActionsForReply(value: unknown): string[] {
+  const seen = new Set<string>();
+  return stringArray(value)
+    .map(cleanSuggestedAction)
+    .filter((action) => {
+      const key = action.toLowerCase();
+      if (!action || seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    })
+    .slice(0, 4);
+}
+
 function normalizedStringArray(value: unknown): unknown[] {
   if (Array.isArray(value)) return value;
   return stringArray(value);
@@ -99,6 +122,10 @@ function setupTokenMatches(setup: any, token: string | null): boolean {
 
 function setupHasToken(setup: any): boolean {
   return Boolean(nullableText(setup?.setup_token_hash));
+}
+
+function setupCompleted(setup: any): boolean {
+  return Boolean(nullableText(setup?.completed_at) || nullableText(setup?.agent_id) || setup?.status === 'completed');
 }
 
 function testUsersFor(input: SetupDraftInput, customerId: string): unknown[] {
@@ -145,7 +172,8 @@ function draftFrom(input: SetupDraftInput, setup: any) {
       nullableText(input.businessType) ??
       nullableText(setup?.business_type) ??
       DEFAULT_BUSINESS_TYPE,
-    useCase: tone ? `${useCase}\nTone/context: ${tone}` : useCase,
+    useCase,
+    tone: tone ?? undefined,
     integrations: stringArray(input.integrations).length ? stringArray(input.integrations) : ['None'],
     handoffDestination:
       nullableText(input.handoffDestination) ??
@@ -184,7 +212,7 @@ function configFromInput(input: SetupDraftInput): AgentConfig | null {
     prompt,
     guardrails,
     welcomeMessage: nullableText(input.welcomeMessage) ?? '',
-    suggestedActions: stringArray(input.suggestedActions).slice(0, 4),
+    suggestedActions: suggestedActionsForReply(input.suggestedActions),
   };
 }
 
@@ -327,23 +355,24 @@ export async function startAppClipSetup(input: {
 }): Promise<{ setupId: string; appClipSent: boolean }> {
   const existing = await findOpenSetup(input.customerId);
   const existingId = uuidOrNull(existing?.id);
+  const canReuseExisting = Boolean(existingId && !setupHasToken(existing));
   const setupToken = randomUUID();
-  const setupId =
-    existingId ??
-    (await upsertSetup(
-      {
-        customerId: input.customerId,
-        setupToken,
-        mspConversationId: input.mspConversationId,
-        setupContext: {
-          source: 'messages_no_active_agent',
-          initialText: nullableText(input.initialText),
-          raw: input.raw ?? null,
+  const setupId = canReuseExisting && existingId
+    ? existingId
+    : await upsertSetup(
+        {
+          customerId: input.customerId,
+          setupToken,
+          mspConversationId: input.mspConversationId,
+          setupContext: {
+            source: 'messages_no_active_agent',
+            initialText: nullableText(input.initialText),
+            raw: input.raw ?? null,
+          },
         },
-      },
-      input.customerId,
-    ));
-  if (existingId) {
+        input.customerId,
+      );
+  if (canReuseExisting) {
     await upsertSetup(
       {
         setupId,
@@ -399,6 +428,9 @@ export async function completeAppClipSetup(
   if (options.requireSetupToken && (!setup || !setupHasToken(setup) || !setupTokenMatches(setup, token))) {
     throw new Error('setup token did not match');
   }
+  if (options.requireSetupToken && setupCompleted(setup)) {
+    throw new Error('setup already completed');
+  }
   if (!options.requireSetupToken && token && setup && !setupTokenMatches(setup, token)) {
     throw new Error('setup token did not match');
   }
@@ -448,6 +480,37 @@ export async function completeAppClipSetup(
     } catch (err) {
       console.warn('[setup] setup confirmation send failed:', err);
     }
+
+    const actions = suggestedActionsForReply(config.suggestedActions);
+    if (confirmationSent && actions.length >= 2) {
+      const prompt = 'Try the agent:';
+      try {
+        await sendQuickReply(customerId, prompt, actions, randomUUID());
+        await appendTurn(state.id ?? conversationId, {
+          role: 'agent',
+          text: prompt,
+          kind: 'quick_reply',
+          interactive: {
+            type: 'quick_reply',
+            title: prompt,
+            subtitle: 'Tap to respond',
+            items: actions.map((title) => ({ id: title, title })),
+          },
+        });
+        await logConversationEvent({
+          conversationId: state.id ?? conversationId,
+          agentId,
+          customerId,
+          mspConversationId: state.mspConversationId,
+          eventType: 'quick_reply_sent',
+          actor: 'agent',
+          body: prompt,
+          payload: { actions, source: 'app_clip_setup_completed' },
+        });
+      } catch (err) {
+        console.warn('[setup] setup suggested actions send failed:', err);
+      }
+    }
   }
 
   await logConversationEvent({
@@ -459,6 +522,14 @@ export async function completeAppClipSetup(
     actor: 'system',
     payload: { setupId, generated, confirmationSent },
   });
+
+  if (options.requireSetupToken) {
+    const { error } = await supabase
+      .from('setups')
+      .update({ setup_token_hash: null, updated_at: new Date().toISOString() })
+      .eq('id', setupId);
+    if (error) throw error;
+  }
 
   const [{ data: finalSetup }, { data: finalAgent }] = await Promise.all([
     supabase.from('setups').select('*').eq('id', setupId).maybeSingle(),
