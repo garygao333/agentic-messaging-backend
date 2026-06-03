@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.1.6 - 2026-06-03
+
+### Fixed
+- Kept no-active-agent Messages onboarding working when live Supabase has not
+  applied the App Clip setup provenance columns yet. Setup and agent writes now
+  retry after removing missing additive columns and keep the setup binding in
+  process memory as a compatibility fallback.
+- Included `customer_id` in App Clip setup params so older schemas can still
+  bind completion back to the originating Messages sender.
+- Fixed response buffering so failed no-active-agent setup writes do not create
+  an unhandled promise rejection that crashes the Node process.
+
 ## 0.1.5 - 2026-06-03
 
 ### Changed

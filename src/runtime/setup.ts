@@ -116,6 +116,75 @@ function hashSetupToken(token: string): string {
   return createHash('sha256').update(token).digest('hex');
 }
 
+const unsupportedColumns = new Map<string, Set<string>>();
+const memorySetups = new Map<string, Record<string, unknown>>();
+
+function rememberUnsupportedColumn(table: string, column: string): void {
+  const columns = unsupportedColumns.get(table) ?? new Set<string>();
+  if (!columns.has(column)) {
+    console.warn(`[setup] ${table}.${column} missing in Supabase schema; using compatibility fallback`);
+  }
+  columns.add(column);
+  unsupportedColumns.set(table, columns);
+}
+
+function missingColumn(error: unknown): string | null {
+  const message =
+    error && typeof error === 'object' && 'message' in error
+      ? String((error as { message?: unknown }).message ?? '')
+      : String(error ?? '');
+  return /Could not find the '([^']+)' column/.exec(message)?.[1] ?? null;
+}
+
+function stripUnsupportedColumns<T extends Record<string, unknown>>(table: string, row: T): T {
+  const columns = unsupportedColumns.get(table);
+  if (!columns?.size) return row;
+  const next = { ...row };
+  for (const column of columns) delete next[column];
+  return next;
+}
+
+async function writeWithSchemaRetry<T extends Record<string, unknown>>(
+  table: string,
+  row: T,
+  write: (payload: T) => PromiseLike<{ data: any; error: any }>,
+): Promise<{ data: any; error: any }> {
+  let payload = stripUnsupportedColumns(table, row);
+  for (let attempt = 0; attempt < 20; attempt += 1) {
+    const result = await write(payload);
+    if (!result.error) return result;
+    const column = missingColumn(result.error);
+    if (!column || !(column in payload)) return result;
+    rememberUnsupportedColumn(table, column);
+    payload = stripUnsupportedColumns(table, payload);
+  }
+  return write(payload);
+}
+
+function rememberSetup(setupId: string, input: SetupDraftInput, customerId: string, agentId?: string | null): void {
+  const existing = memorySetups.get(setupId) ?? {};
+  const patch: Record<string, unknown> = {
+    ...existing,
+    id: setupId,
+    customer_id: customerId,
+    msp_conversation_id: nullableText(input.mspConversationId) ?? existing.msp_conversation_id ?? null,
+    agent_id: agentId ?? existing.agent_id ?? null,
+    setup_context: {
+      ...jsonObject(existing.setup_context),
+      ...jsonObject(input.setupContext),
+      ...(input.customerIdentity ? { customerIdentity: input.customerIdentity } : {}),
+    },
+  };
+  if (input.setupToken) patch.setup_token_hash = hashSetupToken(input.setupToken);
+  memorySetups.set(setupId, patch);
+}
+
+function mergeRememberedSetup(setup: any): any {
+  if (!setup?.id) return setup;
+  const remembered = memorySetups.get(setup.id);
+  return remembered ? { ...setup, ...remembered } : setup;
+}
+
 function setupTokenMatches(setup: any, token: string | null): boolean {
   const hash = nullableText(setup?.setup_token_hash);
   if (!hash) return true;
@@ -250,10 +319,13 @@ async function loadSetup(setupId: string | null): Promise<any | null> {
   if (!setupId) return null;
   const { data, error } = await supabase.from('setups').select('*').eq('id', setupId).maybeSingle();
   if (error) throw error;
-  return data ?? null;
+  return mergeRememberedSetup(data ?? memorySetups.get(setupId) ?? null);
 }
 
 async function findOpenSetup(customerId: string): Promise<any | null> {
+  for (const setup of memorySetups.values()) {
+    if (setup.customer_id === customerId && !setup.completed_at && !setup.agent_id) return setup;
+  }
   const { data, error } = await supabase
     .from('setups')
     .select('*')
@@ -269,17 +341,23 @@ async function upsertSetup(input: SetupDraftInput, customerId: string, agentId?:
   const existingId = uuidOrNull(input.setupId);
   const patch = setupPatch(input, customerId, agentId, config);
   if (existingId) {
-    const { data, error } = await supabase
-      .from('setups')
-      .upsert({ id: existingId, ...patch }, { onConflict: 'id' })
-      .select('id')
-      .single();
+    const { data, error } = await writeWithSchemaRetry('setups', { id: existingId, ...patch }, (row) =>
+      supabase
+        .from('setups')
+        .upsert(row, { onConflict: 'id' })
+        .select('id')
+        .single(),
+    );
     if (error) throw error;
+    rememberSetup(data.id, input, customerId, agentId);
     return data.id;
   }
 
-  const { data, error } = await supabase.from('setups').insert(patch).select('id').single();
+  const { data, error } = await writeWithSchemaRetry('setups', patch, (row) =>
+    supabase.from('setups').insert(row).select('id').single(),
+  );
   if (error) throw error;
+  rememberSetup(data.id, input, customerId, agentId);
   return data.id;
 }
 
@@ -334,21 +412,25 @@ async function ensureAgent(input: SetupDraftInput, setup: any, setupId: string, 
   };
 
   if (existing) {
-    const { data, error } = await supabase
-      .from('agents')
-      .update(row)
-      .eq('id', existing.id)
-      .select('id')
-      .single();
+    const { data, error } = await writeWithSchemaRetry('agents', row, (payload) =>
+      supabase
+        .from('agents')
+        .update(payload)
+        .eq('id', existing.id)
+        .select('id')
+        .single(),
+    );
     if (error) throw error;
     return { agentId: data.id, config, generated: needsGeneratedConfig };
   }
 
-  const { data, error } = await supabase
-    .from('agents')
-    .insert({ ...row, created_at: now })
-    .select('id')
-    .single();
+  const { data, error } = await writeWithSchemaRetry('agents', { ...row, created_at: now }, (payload) =>
+    supabase
+      .from('agents')
+      .insert(payload)
+      .select('id')
+      .single(),
+  );
   if (error) throw error;
   return { agentId: data.id, config, generated: needsGeneratedConfig };
 }
@@ -404,6 +486,7 @@ export async function startAppClipSetup(input: {
     await sendAppClip(input.customerId, {
       setup_id: setupId,
       setup_token: setupToken,
+      customer_id: input.customerId,
       ...(input.mspConversationId ? { msp_conversation_id: input.mspConversationId } : {}),
     });
     await logConversationEvent({
@@ -455,7 +538,7 @@ export async function completeAppClipSetup(
       : input;
   const customerId =
     options.trustRequestBinding === false
-      ? nullableText(setup?.customer_id)
+      ? nullableText(setup?.customer_id) ?? nullableText(trustedInput.customerId)
       : nullableText(setup?.customer_id) ?? nullableText(trustedInput.customerId);
   if (!customerId) {
     throw new Error('customer_id is required to complete App Clip setup');
@@ -533,11 +616,19 @@ export async function completeAppClipSetup(
   });
 
   if (options.requireSetupToken) {
-    const { error } = await supabase
-      .from('setups')
-      .update({ setup_token_hash: null, updated_at: new Date().toISOString() })
-      .eq('id', setupId);
+    const { error } = await writeWithSchemaRetry(
+      'setups',
+      { setup_token_hash: null, updated_at: new Date().toISOString() },
+      (row) => supabase.from('setups').update(row).eq('id', setupId),
+    );
     if (error) throw error;
+    const remembered = memorySetups.get(setupId);
+    if (remembered) {
+      delete remembered.setup_token_hash;
+      remembered.completed_at = new Date().toISOString();
+      remembered.agent_id = agentId;
+      memorySetups.set(setupId, remembered);
+    }
   }
 
   const [{ data: finalSetup }, { data: finalAgent }] = await Promise.all([

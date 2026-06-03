@@ -138,8 +138,8 @@ async function handleComplete(c: any) {
   const input = isPublicAppClip
     ? {
         ...rawInput,
-        customerId: null,
-        mspConversationId: null,
+        customerId: rawInput.customerId,
+        mspConversationId: rawInput.mspConversationId,
         agentId: null,
         testUsers: undefined,
         prompt: null,

@@ -94,12 +94,14 @@ export async function bufferAgentTurn(
     .catch(() => {})
     .then(() => enqueueBufferedAgentTurn(customerId, customerText, mspConversationId, metadata));
 
-  customerChains.set(
-    customerId,
-    next.finally(() => {
-      if (customerChains.get(customerId) === next) customerChains.delete(customerId);
-    }),
-  );
+  let tracked: Promise<void>;
+  tracked = next
+    .catch(() => {})
+    .finally(() => {
+      if (customerChains.get(customerId) === tracked) customerChains.delete(customerId);
+    });
+
+  customerChains.set(customerId, tracked);
 
   await next;
 }
