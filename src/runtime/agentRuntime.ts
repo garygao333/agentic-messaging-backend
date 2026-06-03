@@ -7,6 +7,7 @@
  * throws into the request path.
  */
 import { getAgent } from '../supabase.js';
+import { classifyHandoffIntent } from '../llm/handoffIntent.js';
 import { chatReply, type HistoryTurn } from '../llm/reply.js';
 import {
   requestAgent,
@@ -62,9 +63,39 @@ function isChertAgent(agent: RuntimeAgent): boolean {
   return /\b(chert|trychert|agentic messaging)\b/.test(agentHaystack(agent));
 }
 
-/** Cheap heuristic for "get me a human". Decision: latest-wins, no LLM classifier for MVP. */
-function wantsHuman(text: string): boolean {
-  return /\b(human|agent|representative|real person|speak to someone|talk to someone)\b/i.test(text);
+/** Cheap heuristic for obvious handoff intent. The LLM classifier handles softer cases. */
+function handoffReason(text: string, metadata: InboundTurnMetadata): string | null {
+  const normalized = normalizeText(text);
+  const supportTap = Boolean(metadata.interactive) && hasAny(normalized, [
+    /\b(contact|customer|live|human)?\s*support\b/,
+    /\btalk to (an? )?(agent|person|staff|support)\b/,
+    /\bspeak to (an? )?(agent|representative|person|staff|support)\b/,
+    /\bhuman handoff\b/,
+  ]);
+  if (supportTap) return 'Customer selected support handoff';
+
+  if (hasAny(normalized, [
+    /\b(human|representative|real person|operator)\b/,
+    /\b(live|support)\s+agent\b/,
+    /\b(contact|call|connect me with|transfer me to)\s+(support|an? agent|a representative|a person|staff)\b/,
+    /\bspeak to (someone|support|an? agent|a representative|a person|staff)\b/,
+    /\btalk to (someone|support|an? agent|a representative|a person|staff)\b/,
+    /\b(call me|callback|call back)\b/,
+  ])) {
+    return 'Customer requested a human';
+  }
+
+  return null;
+}
+
+function handoffTriggerForReason(reason: string):
+  | 'explicit_request'
+  | 'support_option'
+  | 'frustration'
+  | 'unsupported_action'
+  | 'sensitive_or_risky' {
+  if (/selected support/i.test(reason)) return 'support_option';
+  return 'explicit_request';
 }
 
 function isHumanPaused(state: ConversationState): boolean {
@@ -473,17 +504,28 @@ export async function runAgentTurn(
     return;
   }
 
-  // Human handoff: create/reuse a durable session, escalate in 1440, tell the customer.
-  if (wantsHuman(customerText)) {
-    const reason = 'Customer requested a human';
+  // Human handoff: a quick LLM router makes the real handoff decision before
+  // the normal agent reply. A deterministic matcher remains as a fallback for
+  // obvious support/human/callback requests and interactive support taps.
+  const explicitHandoffReason = handoffReason(customerText, metadata);
+  const llmHandoffDecision = explicitHandoffReason
+    ? {
+        handoff: true,
+        reason: explicitHandoffReason,
+        priority: 'normal' as const,
+        trigger: handoffTriggerForReason(explicitHandoffReason),
+      }
+    : await classifyHandoffIntent(agent, history, customerText, metadata);
+  if (llmHandoffDecision.handoff) {
+    const reason = llmHandoffDecision.reason || 'Customer requested a human';
     const session = await createHandoffSession({
       conversationId: state.id,
       agentId,
       customerId,
       mspConversationId,
-      trigger: 'explicit_request',
+      trigger: llmHandoffDecision.trigger,
       reason,
-      priority: 'normal',
+      priority: llmHandoffDecision.priority,
       summary: handoffSummary(history),
     });
     await appendTurn(state.id, { role: 'agent', text: 'Connecting you with a team member.' }, 'Needs Human');

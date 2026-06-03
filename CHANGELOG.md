@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.1.9 - 2026-06-03
+
+### Fixed
+- Added a fast LLM handoff router before normal agent replies so support,
+  human, callback, frustration, billing/account, and unsupported live-system
+  requests create real `handoff_sessions` instead of only producing text that
+  says a human can help.
+- Kept deterministic support/human/callback matching as a fallback for obvious
+  requests and interactive support quick replies.
+
 ## 0.1.8 - 2026-06-03
 
 ### Changed
