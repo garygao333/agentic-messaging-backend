@@ -1,5 +1,29 @@
 # Changelog
 
+## 0.1.8 - 2026-06-03
+
+### Changed
+- Added OpenAI Responses web-search research during agent generation so
+  business websites/names can ground the generated prompt, guardrails, welcome
+  message, and suggested actions.
+- Strengthened generated and live prompts for same-thread Apple Messages agents:
+  collect domain-specific details, avoid live-system claims, qualify researched
+  facts, and hand off for account, booking, billing, or policy work.
+- Made live quick replies domain-aware for travel, appointment, and ecommerce
+  agents, including broader airline language such as check-in, delays, seats,
+  itinerary, cancellation, and baggage.
+
+### Fixed
+- Prevented generic setup-category buttons such as E-commerce, Healthcare, Home
+  services, or Book demo from leaking into non-builder agent setup confirmations
+  or live runtime quick replies.
+- Validated and sanitized business research profiles before accepting them from
+  setup routes or existing Supabase provenance, and preserved research through
+  schema-drift fallbacks.
+- Hardened OpenAI research error handling so auth, rate-limit, timeout, or server
+  failures do not trigger a second paid request or expose raw provider errors to
+  clients.
+
 ## 0.1.7 - 2026-06-03
 
 ### Fixed

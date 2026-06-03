@@ -1,5 +1,6 @@
 import { Hono } from 'hono';
 import { requireAppAuth } from '../auth.js';
+import { parseBusinessResearchProfile } from '../llm/businessResearch.js';
 import { completeAppClipSetup } from '../runtime/setup.js';
 
 export const setup = new Hono();
@@ -16,6 +17,16 @@ function text(body: any, ...keys: string[]): string | null {
 
 function bool(body: any, key: string, fallback: boolean): boolean {
   return typeof body?.[key] === 'boolean' ? body[key] : fallback;
+}
+
+function objectValue(body: any, ...keys: string[]): Record<string, unknown> | null {
+  for (const key of keys) {
+    const value = body?.[key];
+    if (value && typeof value === 'object' && !Array.isArray(value)) {
+      return value as Record<string, unknown>;
+    }
+  }
+  return null;
 }
 
 function customerIdentityInput(body: any, identity: any) {
@@ -112,6 +123,12 @@ function setupInput(body: any) {
       config.suggested_actions ??
       agent.suggestedActions ??
       agent.suggested_actions,
+    businessResearch:
+      parseBusinessResearchProfile(
+        objectValue(body, 'businessResearch', 'business_research') ??
+        objectValue(config, 'businessResearch', 'business_research') ??
+        objectValue(agent, 'businessResearch', 'business_research'),
+      ),
     customerIdentity: customerIdentityInput(body, identity),
     setupContext: {
       ...(body.context && typeof body.context === 'object' ? body.context : {}),
@@ -146,6 +163,7 @@ async function handleComplete(c: any) {
         guardrails: null,
         welcomeMessage: null,
         suggestedActions: undefined,
+        businessResearch: null,
       }
     : rawInput;
   if (!input.customerId && !input.setupId) {

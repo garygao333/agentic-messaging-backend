@@ -23,6 +23,7 @@ import {
 } from './handoff.js';
 import { runRuntimePlugins } from './plugins/registry.js';
 import { startAppClipSetup } from './setup.js';
+import { isGenericSetupAction, uniqueActionLabels } from './actionLabels.js';
 
 const nextRequestId = () => crypto.randomUUID();
 const CHERT_WEBSITE_URL = 'https://trychert.com';
@@ -30,6 +31,7 @@ const CHERT_DEMO_URL = 'https://cal.com/team/chert/chert-call';
 const GENERAL_ACTIONS = ['Book demo', 'See API features', 'Check fit', 'Talk to founder'];
 
 type ActionIntent = 'intro' | 'menu' | 'api' | 'fit' | 'none';
+type RuntimeAgent = NonNullable<Awaited<ReturnType<typeof getAgent>>>;
 
 interface ActionPlan {
   intent: ActionIntent;
@@ -44,11 +46,20 @@ interface RichLinkPlan {
   reason: 'website' | 'demo';
 }
 
-function isChertAgent(agent: NonNullable<Awaited<ReturnType<typeof getAgent>>>): boolean {
-  const haystack = [agent.name, agent.company_name, agent.website, agent.use_case, agent.prompt]
-    .join(' ')
-    .toLowerCase();
-  return /\b(chert|trychert|agentic messaging)\b/.test(haystack);
+function agentHaystack(agent: RuntimeAgent): string {
+  return [
+    agent.name,
+    agent.company_name,
+    agent.website,
+    agent.business_type,
+    agent.use_case,
+    agent.prompt,
+    agent.guardrails,
+  ].join(' ').toLowerCase();
+}
+
+function isChertAgent(agent: RuntimeAgent): boolean {
+  return /\b(chert|trychert|agentic messaging)\b/.test(agentHaystack(agent));
 }
 
 /** Cheap heuristic for "get me a human". Decision: latest-wins, no LLM classifier for MVP. */
@@ -117,24 +128,7 @@ function normalizeText(text: string): string {
 }
 
 function uniqueActions(actions: string[]): string[] {
-  const seen = new Set<string>();
-  return actions
-    .map((action) =>
-      action
-        .replace(/[\u0000-\u001f\u007f]/g, '')
-        .replace(/\s+/g, ' ')
-        .replace(/^["'`]+|["'`.!?]+$/g, '')
-        .trim()
-        .slice(0, 24)
-        .trim(),
-    )
-    .filter((action) => {
-      const key = action.toLowerCase();
-      if (!action || seen.has(key)) return false;
-      seen.add(key);
-      return true;
-    })
-    .slice(0, 4);
+  return uniqueActionLabels(actions, { allowSetupCategories: true });
 }
 
 function customerTurnCount(history: HistoryTurn[]): number {
@@ -154,8 +148,75 @@ function recentlySentQuickReply(history: HistoryTurn[], prompt?: string): boolea
   });
 }
 
-function inferActionPlan(customerText: string, history: HistoryTurn[]): ActionPlan {
+function greetingOrMenu(text: string, history: HistoryTurn[]): boolean {
+  const asksForMenu = hasAny(text, [
+    /\b(options?|choices?|menu|next steps?)\b/,
+    /\bwhat can you do\b/,
+    /\bhelp me choose\b/,
+  ]);
+  const greeting =
+    customerTurnCount(history) <= 2 &&
+    hasAny(text, [/\b(hi|hello|hey|who are you|what is this|how does this work)\b/]);
+  return asksForMenu || greeting;
+}
+
+function domainActionPlan(agent: RuntimeAgent, customerText: string, history: HistoryTurn[]): ActionPlan | null {
   const text = normalizeText(customerText);
+  const haystack = agentHaystack(agent);
+  const greeting = greetingOrMenu(text, history);
+  const flightIntent = hasAny(text, [
+    /\b(flight|airline|delta|trip|reservation|confirmation|pnr|boarding|gate|baggage|bag|miles|skymiles)\b/,
+    /\b(check[\s-]?in|seat|upgrade|cancel|delay|delayed|departure|arrival|itinerary|ticket|standby)\b/,
+  ]);
+  const travelAgent = /\b(airline|flight|delta|travel|trip|baggage|reservation)\b/.test(haystack);
+  if (travelAgent && (greeting || flightIntent)) {
+    return {
+      intent: greeting ? 'intro' : 'menu',
+      prompt: flightIntent ? 'What flight help do you need?' : 'What can I help with?',
+      actions: ['Flight status', 'Change trip', 'Baggage help', 'Talk to agent'],
+    };
+  }
+
+  const appointmentIntent = hasAny(text, [
+    /\b(book|schedule|appointment|visit|reschedule|cancel|availability|available|time)\b/,
+  ]);
+  const appointmentAgent = /\b(appointment|booking|clinic|dental|dentist|doctor|salon|service|home services?)\b/.test(haystack);
+  if (appointmentAgent && (greeting || appointmentIntent)) {
+    return {
+      intent: greeting ? 'intro' : 'menu',
+      prompt: appointmentIntent ? 'What appointment help do you need?' : 'What can I help with?',
+      actions: ['Book a time', 'Reschedule', 'Ask pricing', 'Talk to staff'],
+    };
+  }
+
+  const orderIntent = hasAny(text, [
+    /\b(order|return|refund|shipping|delivery|track|exchange|product|cart|store)\b/,
+  ]);
+  const commerceAgent = /\b(e-?commerce|shopify|store|retail|order|return|shipping|product)\b/.test(haystack);
+  if (commerceAgent && (greeting || orderIntent)) {
+    return {
+      intent: greeting ? 'intro' : 'menu',
+      prompt: orderIntent ? 'What order help do you need?' : 'What can I help with?',
+      actions: ['Track order', 'Start return', 'Product help', 'Talk to agent'],
+    };
+  }
+
+  return null;
+}
+
+function configuredActionsUseful(agent: RuntimeAgent, actions: string[]): boolean {
+  const cleaned = uniqueActionLabels(actions, { allowSetupCategories: true });
+  if (cleaned.length < 2) return false;
+  if (isChertAgent(agent)) return true;
+  const genericCount = cleaned.filter(isGenericSetupAction).length;
+  return genericCount === 0;
+}
+
+function inferActionPlan(agent: RuntimeAgent, customerText: string, history: HistoryTurn[]): ActionPlan {
+  const text = normalizeText(customerText);
+  const domainPlan = domainActionPlan(agent, customerText, history);
+  if (domainPlan) return domainPlan;
+
   const asksForMenu = hasAny(text, [
     /\b(options?|choices?|menu|next steps?)\b/,
     /\bwhat can you do\b/,
@@ -169,11 +230,9 @@ function inferActionPlan(customerText: string, history: HistoryTurn[]): ActionPl
     /\b(check fit|fit|use cases?|for my|my business|my store|e-?commerce|shopify)\b/,
     /\bhealthcare|home services?|hospitality|clinic|restaurant|retail\b/,
   ]);
-  const greeting =
-    customerTurnCount(history) <= 2 &&
-    hasAny(text, [/\b(hi|hello|hey|who are you|what is this|how does this work)\b/]);
+  const greeting = greetingOrMenu(text, history) && !asksForMenu;
 
-  if (asksAboutApi) {
+  if (isChertAgent(agent) && asksAboutApi) {
     return {
       intent: 'api',
       prompt: 'Which Messages feature should I show next?',
@@ -181,7 +240,7 @@ function inferActionPlan(customerText: string, history: HistoryTurn[]): ActionPl
     };
   }
 
-  if (asksAboutFit) {
+  if (isChertAgent(agent) && asksAboutFit) {
     return {
       intent: 'fit',
       prompt: 'What kind of conversation are you testing?',
@@ -189,7 +248,7 @@ function inferActionPlan(customerText: string, history: HistoryTurn[]): ActionPl
     };
   }
 
-  if (asksForMenu) {
+  if (isChertAgent(agent) && asksForMenu) {
     return {
       intent: 'menu',
       prompt: 'Pick the path that fits:',
@@ -200,8 +259,8 @@ function inferActionPlan(customerText: string, history: HistoryTurn[]): ActionPl
   if (greeting) {
     return {
       intent: 'intro',
-      prompt: 'Pick the path that fits:',
-      actions: GENERAL_ACTIONS,
+      prompt: 'What can I help with?',
+      actions: [],
     };
   }
 
@@ -223,7 +282,7 @@ function shouldSendActionPlan(
   return true;
 }
 
-function richLinksFor(agent: NonNullable<Awaited<ReturnType<typeof getAgent>>>, customerText: string): RichLinkPlan[] {
+function richLinksFor(agent: RuntimeAgent, customerText: string): RichLinkPlan[] {
   if (!isChertAgent(agent)) return [];
   const text = normalizeText(customerText);
   const links: RichLinkPlan[] = [];
@@ -486,12 +545,14 @@ export async function runAgentTurn(
 
   const reply = await chatReply(agent, history);
 
-  const actionPlan = inferActionPlan(customerText, history);
+  const actionPlan = inferActionPlan(agent, customerText, history);
   const configuredActions = Array.isArray(agent.suggested_actions)
     ? agent.suggested_actions.map(String).filter(Boolean)
     : [];
   const useConfiguredActions =
-    configuredActions.length > 0 && (actionPlan.intent === 'intro' || actionPlan.intent === 'menu');
+    configuredActionsUseful(agent, configuredActions) &&
+    actionPlan.actions.length === 0 &&
+    (actionPlan.intent === 'intro' || actionPlan.intent === 'menu');
   const actions = uniqueActions(useConfiguredActions ? configuredActions : actionPlan.actions);
   const sendActions = shouldSendActionPlan({ ...actionPlan, actions }, history, metadata);
   const richLinks = richLinksFor(agent, customerText);

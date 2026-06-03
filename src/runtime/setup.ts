@@ -1,7 +1,9 @@
 import { generateAgentConfig, type AgentConfig } from '../llm/generate.js';
 import { env } from '../env.js';
+import { parseBusinessResearchProfile } from '../llm/businessResearch.js';
 import { sendAppClip, sendQuickReply, sendText } from '../msp/send.js';
 import { supabase } from '../supabase.js';
+import { uniqueActionLabels } from './actionLabels.js';
 import { appendTurn, loadState, setActiveAgent } from './conversations.js';
 import { upsertCustomerIdentity, type CustomerIdentityInput } from './customerProfile.js';
 import { logConversationEvent } from './handoff.js';
@@ -29,6 +31,7 @@ export interface SetupDraftInput {
   guardrails?: string | null;
   welcomeMessage?: string | null;
   suggestedActions?: unknown;
+  businessResearch?: AgentConfig['businessResearch'];
   customerIdentity?: CustomerIdentityInput;
   setupContext?: Record<string, unknown>;
   completionPayload?: Record<string, unknown>;
@@ -79,27 +82,8 @@ function stringArray(value: unknown): string[] {
   return Array.isArray(value) ? value.map(String).map((item) => item.trim()).filter(Boolean) : [];
 }
 
-function cleanSuggestedAction(value: unknown): string {
-  return String(value ?? '')
-    .replace(/[\u0000-\u001f\u007f]/g, '')
-    .replace(/\s+/g, ' ')
-    .replace(/^["'`]+|["'`.!?]+$/g, '')
-    .trim()
-    .slice(0, 24)
-    .trim();
-}
-
 function suggestedActionsForReply(value: unknown): string[] {
-  const seen = new Set<string>();
-  return stringArray(value)
-    .map(cleanSuggestedAction)
-    .filter((action) => {
-      const key = action.toLowerCase();
-      if (!action || seen.has(key)) return false;
-      seen.add(key);
-      return true;
-    })
-    .slice(0, 4);
+  return uniqueActionLabels(stringArray(value));
 }
 
 function normalizedStringArray(value: unknown): unknown[] {
@@ -167,7 +151,13 @@ async function writeWithSchemaRetry<T extends Record<string, unknown>>(
   return write(payload);
 }
 
-function rememberSetup(setupId: string, input: SetupDraftInput, customerId: string, agentId?: string | null): void {
+function rememberSetup(
+  setupId: string,
+  input: SetupDraftInput,
+  customerId: string,
+  agentId?: string | null,
+  config?: AgentConfig | null,
+): void {
   const existing = memorySetups.get(setupId) ?? {};
   const patch: Record<string, unknown> = {
     ...existing,
@@ -180,6 +170,7 @@ function rememberSetup(setupId: string, input: SetupDraftInput, customerId: stri
       ...jsonObject(input.setupContext),
       ...(input.customerIdentity ? { customerIdentity: input.customerIdentity } : {}),
     },
+    generated_config: config ?? existing.generated_config ?? {},
   };
   if (input.setupToken) patch.setup_token_hash = hashSetupToken(input.setupToken);
   memorySetups.set(setupId, patch);
@@ -232,6 +223,9 @@ function agentNameFor(input: SetupDraftInput, setup: any): string {
 }
 
 function draftFrom(input: SetupDraftInput, setup: any) {
+  const setupConfig = setup?.generated_config && typeof setup.generated_config === 'object'
+    ? setup.generated_config
+    : {};
   const companyName =
     nullableText(input.companyName) ??
     nullableText(input.businessName) ??
@@ -256,6 +250,7 @@ function draftFrom(input: SetupDraftInput, setup: any) {
       nullableText(input.handoffDestination) ??
       nullableText(setup?.handoff_destination) ??
       '',
+    businessResearch: input.businessResearch ?? parseBusinessResearchProfile(setupConfig.businessResearch) ?? null,
   };
 }
 
@@ -275,6 +270,11 @@ function withSetupFallback(input: SetupDraftInput, setup: any): SetupDraftInput 
     useCase: input.useCase ?? setup.use_case,
     tone: input.tone ?? setup.tone,
     handoffDestination: input.handoffDestination ?? setup.handoff_destination,
+    businessResearch:
+      input.businessResearch ??
+      (setup.generated_config && typeof setup.generated_config === 'object'
+        ? parseBusinessResearchProfile(setup.generated_config.businessResearch)
+        : null),
     testUsers: input.testUsers ?? setup.test_users,
     customerIdentity: input.customerIdentity,
     setupContext: input.setupContext ?? jsonObject(setup.setup_context),
@@ -291,7 +291,20 @@ function configFromInput(input: SetupDraftInput): AgentConfig | null {
     guardrails,
     welcomeMessage: nullableText(input.welcomeMessage) ?? '',
     suggestedActions: suggestedActionsForReply(input.suggestedActions),
+    businessResearch: input.businessResearch ?? null,
   };
+}
+
+function existingBusinessResearch(existing: any): AgentConfig['businessResearch'] {
+  const candidates = [
+    existing?.provenance?.businessResearch,
+    existing?.generated_config?.businessResearch,
+  ];
+  for (const candidate of candidates) {
+    const profile = parseBusinessResearchProfile(candidate);
+    if (profile) return profile;
+  }
+  return null;
 }
 
 function setupPatch(input: SetupDraftInput, customerId: string, agentId?: string | null, config?: AgentConfig | null) {
@@ -355,7 +368,7 @@ async function upsertSetup(input: SetupDraftInput, customerId: string, agentId?:
         .single(),
     );
     if (error) throw error;
-    rememberSetup(data.id, input, customerId, agentId);
+    rememberSetup(data.id, input, customerId, agentId, config);
     return data.id;
   }
 
@@ -363,7 +376,7 @@ async function upsertSetup(input: SetupDraftInput, customerId: string, agentId?:
     supabase.from('setups').insert(row).select('id').single(),
   );
   if (error) throw error;
-  rememberSetup(data.id, input, customerId, agentId);
+  rememberSetup(data.id, input, customerId, agentId, config);
   return data.id;
 }
 
@@ -381,7 +394,7 @@ async function ensureAgent(input: SetupDraftInput, setup: any, setupId: string, 
   const needsGeneratedConfig =
     options.forceGenerate === true ||
     !providedConfig && (!existing || !nullableText(existing.prompt) || !nullableText(existing.guardrails));
-  const config = providedConfig ??
+  const config: AgentConfig = providedConfig ??
     (needsGeneratedConfig
       ? await generateAgentConfig(draft)
       : {
@@ -389,6 +402,7 @@ async function ensureAgent(input: SetupDraftInput, setup: any, setupId: string, 
           guardrails: existing!.guardrails,
           welcomeMessage: existing!.welcome_message ?? '',
           suggestedActions: stringArray(existing!.suggested_actions),
+          businessResearch: existingBusinessResearch(existing),
         });
 
   const row = {
@@ -412,6 +426,7 @@ async function ensureAgent(input: SetupDraftInput, setup: any, setupId: string, 
       customerId,
       setupId,
       generatedAt: needsGeneratedConfig ? now : null,
+      businessResearch: config.businessResearch ?? null,
     },
     welcome_message: config.welcomeMessage,
     suggested_actions: config.suggestedActions,
