@@ -1,137 +1,105 @@
-# Apple Messages for Business Backend — Build Plan
+# Agentic Messaging Direction Plan
 
-**Repo:** `agentic-messaging-backend` (currently empty — greenfield)
-**Sibling app:** `../agentic-messaging-app` (Expo, already built — the UI control plane)
-**MSP:** **1440** (`https://msp.1440.co/functions/v1`) — confirmed from the API docs
-**Deploy target:** Railway (long-running Node service, stable HTTPS webhook, holds secrets server-side)
+**Version:** 0.1.2
+**Synced app version:** `agentic-messaging` 1.0.2
+**Date:** 2026-06-03
 
----
+## Product Direction
 
-## 1. What's already built (System 1 — the Expo app)
+Agentic Messaging is now a one-business-line Apple Messages demo, not an operator-first SaaS control plane.
 
-Verified by reading the app repo:
+There is no separate "user" in the first-run flow. The only primary actor is the customer texting the shared Apple Messages for Business line. The backend should treat that customer as both the person starting setup and the first live tester of the agent.
 
-| Piece | Status | File |
-|---|---|---|
-| Domain models | ✅ | `src/types/models.ts` (`Agent`, `Conversation`, `Setup`, `Message`, `TestUser`) |
-| Supabase schema | ✅ | `supabase/migrations/0001_init.sql` + `0002_agent_messaging.sql` — `agents` / `conversations` / `setups`, jsonb nested collections, **permissive RLS** |
-| App→DB CRUD | ✅ | `src/services/supabaseApi.ts` — app reads/writes Supabase **directly** (camelCase ↔ snake_case mappers) |
-| Mock fallback | ✅ | `src/services/mockApi.ts` |
-| LLM client (contract) | ✅ | `src/services/llm.ts` — `generateAgentConfig()` + `chatReply()`, already supports `EXPO_PUBLIC_LLM_PROXY_URL` to point at us; falls back to templates |
-| Prompt templates | ✅ | `src/lib/generate.ts` — `defaultPrompt`, `defaultGuardrails`, `previewFor` (the fallback logic we should mirror) |
-| AMB deep-link protocol | ✅ | `src/lib/messageLinks.ts` — builds `bcrw.apple.com/urn:biz:<id>?body=<cmd>` for all 5 commands |
-| Backend selector | ✅ | `src/lib/runtime.ts` |
+## Canonical Flow
 
-**The integration surface is therefore fixed and small:** the Supabase schema, the 5 protocol command bodies, and the two LLM endpoint shapes. We build against those — no app source dependency.
+1. Customer texts the configured Apple Messages for Business line.
+2. Backend receives the 1440 webhook and identifies the sender by Apple/1440 `customer_id` (`urn:mbid:...`).
+3. If no active agent exists for that customer, backend sends an App Clip setup entry point.
+4. App Clip collects the minimum brief:
+   - company website or business name
+   - what the agent should do
+   - tone/business context
+   - optional handoff instruction
+5. App Clip creates the agent draft through the shared app/backend model.
+6. Backend immediately generates the agent config, marks it live for that same customer thread, and sends a confirmation in Messages.
+7. Customer continues texting the same business line and is now talking to the newly created agent.
+8. If the customer wants to edit the agent, backend/app sends a second App Clip or install prompt that routes into the full mobile app for management.
 
----
+## What Changes From The Previous Model
 
-## 2. What's left to build (System 2 — this backend)
+- Remove the assumption that a workspace operator signs in first, creates an agent, deploys it, and invites test users.
+- Remove "test users" as the primary deploy gate for the demo flow.
+- Treat `START_AGENT_SETUP` and first inbound plain text as possible setup starts.
+- Treat App Clip setup completion as the deployment event for that customer thread.
+- Keep the dashboard/mobile app as a later management surface, not the first product surface.
+- Keep operator inbox/handoff capabilities, but they are secondary demo support tools.
 
-Everything. The directory is empty. Scope, in dependency order:
+## Backend Responsibilities
 
-1. **Scaffold** — Node + TypeScript + Hono (lightweight, TS-native, trivial on Railway). Supabase service client, OpenAI SDK, env loader, `/health`.
-2. **LLM endpoints** (`POST /agents/generate`, `POST /agents/:id/preview-message`) — *one shared prompt-construction module* reused by the live runtime. This alone unblocks the App-Store-safe app build (drop the client key).
-3. **1440 echo bot** — inbound webhook receiver + outbound `send-message-api` wrapper, round-tripping on the test account.
-4. **Protocol handlers** — parse the 5 command bodies, read/write Supabase, idempotent on retries.
-5. **Agent runtime** — load agent config, build system prompt (same module as #2), call LLM, send reply, persist the turn to `conversations.messages`, map `suggestedActions` → quick replies, detect handoff → `status='Needs Human'`.
-6. **App Clip link generation** — `send-message-api` `type: "app-clip"` carrying `setup_id`.
-7. **LOGIN 2FA verification** + RLS hardening.
+- Parse inbound customer messages from 1440 and keep responding quickly.
+- Maintain `customer_profiles` for every inbound sender.
+- Maintain `conversations.customer_id` and `conversations.active_agent_id` as the core routing state.
+- Send setup App Clips when a customer has no active agent.
+- Provide a backend endpoint or command path for App Clip setup completion that:
+  - creates or updates the agent,
+  - generates prompt/guardrails/actions,
+  - sets the agent as active for the customer,
+  - persists the conversation state,
+  - confirms deployment in Messages.
+- Continue supporting runtime plugins for vertical flows once the agent is active.
+- Support an edit/install handoff path for customers who want to change the generated agent.
 
----
+## App Responsibilities
 
-## 3. How the 1440 API maps to our needs
+- App Clip is the first-run builder UI.
+- Full mobile app is the edit/manage surface after the customer already has an agent.
+- App must not require Supabase Auth or a pre-existing workspace user for the initial demo setup.
+- App should pass enough setup context to the backend to bind the created agent to the current `customer_id`.
 
-From the docs you gave me:
+## Data Model Direction
 
-| We need | 1440 mechanism |
-|---|---|
-| Auth to 1440 | `Authorization: Bearer <API_KEY>` + `X-Business-Id: <BUSINESS_ID>` |
-| Send text/quick-reply/list/rich-link/app-clip | `POST /send-message-api`, dispatched by `messageType` / `type` |
-| Receive customer messages | Inbound webhook (configure URL in **Business Accounts → Webhook URL**) |
-| Read interactive replies cleanly | **Bot Webhook** — pre-decrypted `interactiveResponse` + `textBody`, no MSP creds needed to read selections |
-| Reply target | inbound `headers.source_id` (customer `urn:mbid:`) → outbound `destinationId` |
-| Protocol commands (`LOGIN …`, `START_AGENT_SETUP`, …) | arrive as the **text body** of `message.received` (`payload.body` / `data.body.text`) |
-| Quick replies / list picker | `messageType: "interactive"` (raw Apple `interactiveData`) |
-| Escalate to human | `POST /request-agent` (sets `agent_needed`) |
+Current useful tables:
+- `customer_profiles`
+- `conversations`
+- `agents`
+- `setups`
+- `handoff_sessions`
+- `appointments`
 
-**Gotchas baked into the design** (from the docs): `destinationId` direction reversal inbound vs outbound; `urn:mbid:` for everything except invitations (`tel:+`); closed/opted-out → 403; customer must have messaged first; interactive images <200KB base64 inline.
+Needed next:
+- `setups.customer_id` or equivalent setup ownership by Apple/1440 customer id.
+- `agents.created_by_customer_id` or similar provenance.
+- A clear "active demo agent per customer" invariant, using `conversations.active_agent_id`.
+- Optional later: `business_lines` if this grows beyond one Apple Messages sender.
 
----
+## Command Direction
 
-## 4. Proposed repo structure
+Keep:
+- `START_AGENT_SETUP`
+- `AGENT_SETUP_COMPLETE {setup_id}`
+- `REDEPLOY {agent_id}` for edit flows
 
-```
-agentic-messaging-backend/
-  src/
-    index.ts                 # Hono app, route mounting, /health
-    env.ts                   # typed env loader (fail fast on missing)
-    supabase.ts              # service-role client
-    llm/
-      prompt.ts              # SHARED system-prompt construction (the consolidation)
-      generate.ts            # /agents/generate logic
-      reply.ts               # next-reply logic (preview ≡ live runtime)
-    routes/
-      agents.ts              # POST /agents/generate, /agents/:id/preview-message
-      webhook.ts             # POST /webhook — 1440 inbound + bot webhook
-    msp/
-      send.ts                # 1440 send-message-api wrapper (text, interactive, app-clip)
-      parse.ts               # normalize inbound payload shapes → {customerId, text, interactive}
-    runtime/
-      handlers.ts            # the 5 protocol command handlers
-      agentRuntime.ts        # live LLM turn + persist + handoff
-    auth.ts                  # app→backend bearer/JWT guard; LOGIN code verify
-  package.json  tsconfig.json  railway.json  .env.example  README.md
-```
+De-emphasize:
+- `LOGIN {code}` for first-run setup
+- `TEST_AGENT {agent_id}` as the primary activation path
 
----
+Add or redefine:
+- First plain text from a no-agent customer should be allowed to start setup.
+- `AGENT_SETUP_COMPLETE {setup_id}` should activate immediately, not tell the customer to open the app and deploy later.
 
-## 5. Env / secrets (mapped to 1440 + Railway)
+## Build Order
 
-```bash
-# Supabase (shared DB) — SERVICE key, server-side only
-SUPABASE_URL=
-SUPABASE_SERVICE_KEY=
+1. Update product copy/docs to App Clip-first demo flow.
+2. Add setup/customer binding in Supabase migrations.
+3. Add backend setup-complete runtime endpoint/handler that creates, generates, deploys, and activates in one flow.
+4. Simplify App Clip form to the minimum brief and remove test-user-first language.
+5. Update runtime no-agent fallback to send setup App Clip instead of telling the customer to open the app.
+6. Add edit-agent App Clip/install handoff after the agent exists.
+7. Keep dashboard/inbox as internal observability and later management, not the main launch path.
 
-# LLM
-OPENAI_API_KEY=
-OPENAI_MODEL=gpt-4o-mini
+## Acceptance Criteria
 
-# 1440 MSP
-MSP_API_BASE=https://msp.1440.co/functions/v1
-MSP_API_KEY=                 # Bearer
-MSP_BUSINESS_ID=             # X-Business-Id (see open question re: AMB_BIZ_ID)
-MSP_WEBHOOK_SECRET=          # if 1440 signs inbound webhooks (TBC)
-AMB_BIZ_ID=914e49f4-2b03-4e2b-987f-8c8f45e40294
-
-# App → backend auth
-APP_SHARED_TOKEN=            # interim MVP; OR:
-SUPABASE_JWT_SECRET=         # verify the app's Supabase session JWT
-```
-
-Railway: one service, set all of the above in Railway Variables, expose the generated `*.up.railway.app` URL as the webhook + the app's `EXPO_PUBLIC_LLM_PROXY_URL`.
-
----
-
-## 6. Milestones (ship-order)
-
-1. **Scaffold + `/health` on Railway** — proves deploy + secrets.
-2. **LLM endpoints live** → app swaps `llm.ts` to us, removes the client key → **unblocks the App Store build**.
-3. **Echo bot** — webhook in, text out, on the 1440 test account.
-4. **Protocol handlers** wired to Supabase.
-5. **Agent runtime** — real live replies + handoff + persistence.
-6. **App Clip links** + **LOGIN verify** + RLS hardening.
-
-**"It works":** test user texts the biz account → App Clip setup → agent generated → deployed in the app → user chats the live agent in Messages → conversation shows up in the app's Conversations screen.
-
----
-
-## 7. Decisions I'm making by default (tell me if any are wrong)
-
-- **Hono over Express/Fastify** — lightweight, TS-first, clean webhook ergonomics on Railway.
-- **App→backend auth = shared bearer token for MVP**, upgrade to Supabase JWT verification later.
-- **Routing = per `TEST_AGENT {agent_id}` command** sets the active agent for that conversation thread; persisted on the conversation. (Simplest; matches the protocol.)
-- **"Latest wins" deploy** for MVP — no version history table yet (add later if you want auditability).
-- **Use the Bot Webhook** payload shape (pre-decrypted) as the primary path; handle the plain webhook shape as fallback.
-- **Mirror the app's template fallbacks** (`generate.ts`) so behavior degrades gracefully if the LLM errors.
-```
+- A new customer can text the business line and create an agent without using the full app first.
+- After App Clip completion, the same Messages thread immediately routes to the generated agent.
+- The customer can ask to change the agent and receive an edit/install path.
+- The backend, app repo docs, changelogs, and package versions describe the same flow.
