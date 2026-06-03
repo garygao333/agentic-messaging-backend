@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+### Changed
+- Removed stale operator-first planning docs so `PLAN.md` remains the single
+  source of truth for the App Clip-first demo flow.
+- Rewrote the backend README around the current one-business-line Messages
+  runtime and documented runtime plugins as post-activation behavior.
+
 ## 0.1.2 - 2026-06-03
 
 ### Changed

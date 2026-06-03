@@ -1,71 +1,81 @@
-# Agentic Messaging Backend (System 2)
+# Agentic Messaging Backend
 
-Apple Messages for Business backend for Agentic Messaging. Connects to the **1440
-MSP** test account, runs the live agent runtime, and owns all LLM calls (for both
-the live Messages agents and the in-app preview). Shares the Expo app's Supabase DB.
+Backend for the Agentic Messaging Apple Messages for Business demo.
 
-See [`PLAN.md`](./PLAN.md) for the full build plan and open decisions.
+This repo owns the server-only side of the product: 1440 MSP webhooks, outbound
+Messages sends, OpenAI calls, Supabase service-role writes, live agent routing,
+handoff/operator APIs, and runtime plugins. The sibling Expo/App Clip repo is
+`/Users/chert/agentic-messaging`.
 
-## Stack
-Node 20+ · TypeScript · [Hono](https://hono.dev) · `@supabase/supabase-js` · `openai`. Deploys to **Railway**.
+Read `PLAN.md` first. It is the canonical product direction for both repos.
 
-## Run locally
+## Current Product Shape
+
+Agentic Messaging is a one-business-line demo:
+
+1. A customer texts the shared Apple Messages for Business line.
+2. This backend receives the 1440 webhook and identifies the sender by
+   Apple/1440 `customer_id` (`urn:mbid:...`).
+3. If that customer has no active agent, the backend should send an App Clip
+   setup entry point.
+4. The App Clip collects the business brief.
+5. Setup completion creates/generates the agent, activates it for the same
+   customer thread, and confirms in Messages.
+6. Later edits route into the full mobile app.
+
+The old operator-first flow, manual test-user deployment gate, and workspace
+user-first onboarding are no longer the primary demo path.
+
+## Main Code Paths
+
+- `src/index.ts` - Hono entrypoint and route registration.
+- `src/routes/webhook.ts` - 1440 inbound webhook and debug ring buffer.
+- `src/runtime/` - command handling, customer/conversation persistence, active
+  agent routing, response buffering, handoff control, appointments, and live
+  agent turns.
+- `src/routes/agents.ts` - app-auth-gated LLM endpoints for generation and
+  preview.
+- `src/routes/operator.ts` - operator/observability APIs for inbox, customers,
+  handoffs, appointments, replies, pause/resume, and trust settings.
+- `src/msp/` - 1440 payload parsing and outbound send/request-agent helpers.
+- `src/llm/` - OpenAI client, prompts, config generation, and chat replies.
+- `src/runtime/plugins/` - optional vertical behavior after an agent is active.
+- `supabase/migrations/` - backend-owned database additions.
+
+## Shared Contracts
+
+- Apply the app repo's `supabase/migrations/0001_init.sql` before backend
+  migrations.
+- `MSP_BUSINESS_ID` must match the app's `EXPO_PUBLIC_AMB_BIZ_ID`.
+- `APP_SHARED_TOKEN`, when set, gates app/debug/operator endpoints called from
+  the Expo app and local tools.
+- Messages command bodies must stay aligned with the app's
+  `src/lib/messageLinks.ts`: `LOGIN {code}`, `START_AGENT_SETUP`,
+  `AGENT_SETUP_COMPLETE {setup_id}`, `TEST_AGENT {agent_id}`, and
+  `REDEPLOY {agent_id}`.
+- First-run setup should not require Supabase Auth or a pre-existing workspace
+  user. It needs enough customer/thread context to bind the generated agent to
+  `conversations.customer_id` and `conversations.active_agent_id`.
+
+## Run Locally
+
 ```bash
-cp .env.example .env   # fill in secrets (see below)
 npm install
-npm run dev            # tsx watch on PORT (default 8787)
+npm run dev
 npm run typecheck
 ```
 
-## Endpoints
+Required `.env` values are documented in `.env.example`. Do not copy secrets
+into docs, logs, commits, or the app repo.
 
-| Method | Path | Purpose | Status |
-|---|---|---|---|
-| GET | `/health` | liveness + config echo | ✅ |
-| POST | `/agents/generate` | generate agent config from onboarding inputs | ✅ |
-| POST | `/agents/:id/preview-message` | next reply for the in-app preview chat | ✅ |
-| POST | `/webhook` | 1440 inbound (text/interactive) → agent runtime | 🟢 built; needs `0003` + live webhook registration |
+Health check:
 
-The two `/agents/*` endpoints match the app's `src/services/llm.ts` shapes — point
-`EXPO_PUBLIC_LLM_PROXY_URL` at this backend and drop the client OpenAI key.
-
-The runtime persists conversations + multi-turn history (keyed by the customer's
-urn:mbid:), maps `suggested_actions` → quick replies, and escalates to a human
-(1440 `/request-agent` + `status='Needs Human'`) on a handoff trigger. All
-persistence degrades gracefully until `0003` is applied. 1440 send/auth verified.
-
-### ⚠️ One manual step before the runtime persists
-Apply `supabase/migrations/0003_messaging_backend.sql` — paste it into the
-Supabase **SQL editor** (DDL can't go through the REST API). Until then the
-backend runs fine but skips persistence and uses an in-memory routing map.
-
-## Message protocol (inbound text body)
-`LOGIN {code}` · `START_AGENT_SETUP` · `AGENT_SETUP_COMPLETE {setup_id}` ·
-`TEST_AGENT {agent_id}` · `REDEPLOY {agent_id}` — handled in `src/runtime/handlers.ts`.
-
-## Env
-See `.env.example`. Critical: `SUPABASE_SERVICE_KEY` (currently running on the anon
-key as a permissive-RLS stopgap), `OPENAI_API_KEY`, `MSP_API_KEY`, `MSP_BUSINESS_ID`,
-`APP_SHARED_TOKEN`.
-
-## Deploy (Railway)
 ```bash
-railway login
-railway init
-railway up
-# set the same vars from .env in Railway → Variables, then set the 1440
-# Webhook URL (Business Accounts → Webhook URL) to https://<app>.up.railway.app/webhook
+curl http://localhost:8787/health
 ```
 
-## Migrations
-`supabase/migrations/0003_messaging_backend.sql` adds the customer↔conversation
-correlation + `auth_codes` table the runtime/auth need. Apply with the service-role
-key after the app's `0001`/`0002`. Pending owner sign-off on open decisions.
+## Useful Docs
 
-## Known gaps / TODO
-- **Apply `0003`** (SQL editor) — unlocks conversation persistence + LOGIN verify.
-- **Webhook signature verification** — 1440's mechanism TBC (`MSP_WEBHOOK_SECRET`).
-- **App writes LOGIN codes to `auth_codes`** — the backend verify is built; the app
-  must insert the issued code (today it only generates it client-side).
-- **App Clip** — `send-message-api type:app-clip` requires an App Clip configured in 1440.
-- **Set `APP_SHARED_TOKEN`** before deploying (LLM endpoints are open without it).
+- `AGENT.md` - repo context for future coding agents.
+- `PLAN.md` - synced product direction and build order.
+- `CHANGELOG.md` - version history synced with the app repo.

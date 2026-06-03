@@ -1,8 +1,14 @@
 # Runtime Plugins
 
-Runtime plugins are vertical-specific behavior for live Messages agents. Keep the
-core runtime generic; put custom flows here when an agent needs a native Messages
-interaction pattern, custom persistence, or domain-specific decision tree.
+Runtime plugins are vertical-specific behavior for live Messages agents after a
+customer already has an active agent in the shared Apple Messages line. Keep the
+core runtime generic; put custom flows here when an agent needs a native
+Messages interaction pattern, custom persistence, or domain-specific decision
+tree.
+
+Do not put first-run App Clip setup, customer/thread binding, or active-agent
+activation here. Those belong in the setup/runtime routing flow documented in
+`PLAN.md`.
 
 ## Add A Plugin
 
