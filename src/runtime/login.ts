@@ -33,7 +33,7 @@ async function bindCustomerProfile(customerId: string, handle: string | null): P
     const { error } = await supabase.from('customer_profiles').upsert(
       {
         customer_id: customerId,
-        display_name: parts.displayName ?? 'Apple Customer',
+        display_name: parts.displayName ?? customerId,
         phone: parts.phone,
         apple_id: parts.appleId,
         email: parts.email,

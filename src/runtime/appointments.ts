@@ -84,7 +84,7 @@ export async function upsertAppointment(ctx: AppointmentContext): Promise<void> 
     conversation_id: ctx.conversationId,
     agent_id: ctx.agentId,
     customer_id: ctx.customerId,
-    customer_name: ctx.customerName ?? 'Apple Customer',
+    customer_name: ctx.customerName ?? ctx.customerId ?? 'Unknown Messages sender',
     updated_at: new Date().toISOString(),
     patient_details: patientDetails,
     extraction: {

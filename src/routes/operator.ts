@@ -26,6 +26,7 @@ const HANDOFF_SELECT =
   'id, conversation_id, agent_id, customer_id, msp_conversation_id, trigger, reason, priority, status, summary, suggested_reply, assigned_team, assigned_operator, sla_deadline, requested_at, assigned_at, resolved_at, returned_to_agent_at, last_error, created_at, updated_at';
 const APPOINTMENT_SELECT =
   'id, conversation_id, agent_id, customer_id, customer_name, service_identifier, service_title, service_subtitle, slot_identifier, starts_at, duration_seconds, location_title, status, payment_status, payment_amount, payment_currency, patient_details, extraction, created_at, updated_at';
+const GENERIC_DISPLAY_NAMES = new Set(['apple customer', 'messages sender', 'unknown messages sender']);
 
 const warned = new Set<string>();
 
@@ -45,6 +46,28 @@ function cleanText(value: unknown): string | null {
   if (typeof value !== 'string') return null;
   const trimmed = value.trim();
   return trimmed ? trimmed : null;
+}
+
+function isGenericDisplayName(value: unknown): boolean {
+  const text = cleanText(value);
+  return !text || GENERIC_DISPLAY_NAMES.has(text.toLowerCase());
+}
+
+function senderDisplayName(row: any, profile?: any | null): string {
+  const conversationDisplay = cleanText(row.customer_name);
+  if (conversationDisplay && !isGenericDisplayName(conversationDisplay)) return conversationDisplay;
+  const profileDisplay = cleanText(profile?.display_name);
+  if (profileDisplay && !isGenericDisplayName(profileDisplay)) return profileDisplay;
+  return (
+    cleanText(profile?.phone) ??
+    cleanText(profile?.apple_id) ??
+    cleanText(profile?.email) ??
+    cleanText(row.phone) ??
+    cleanText(row.apple_id) ??
+    cleanText(row.email) ??
+    cleanText(row.customer_id) ??
+    'Unknown Messages sender'
+  );
 }
 
 function operatorIdFromBody(body: any): string {
@@ -78,6 +101,10 @@ function includesQuery(row: any, q: string): boolean {
   const needle = q.toLowerCase();
   return [
     row.customer_name,
+    row.profile?.display_name,
+    row.profile?.phone,
+    row.profile?.apple_id,
+    row.profile?.email,
     row.last_message,
     row.customer_id,
     row.msp_conversation_id,
@@ -92,7 +119,7 @@ function mapConversation(row: any) {
     activeAgentId: row.active_agent_id ?? row.agent_id ?? null,
     customerId: row.customer_id ?? null,
     mspConversationId: row.msp_conversation_id ?? null,
-    customerName: row.customer_name ?? 'Apple Customer',
+    customerName: senderDisplayName(row, row.profile),
     lastMessage: row.last_message ?? '',
     status: row.status ?? 'Open',
     timestamp: row.timestamp ?? null,
@@ -150,7 +177,7 @@ function mapCustomerProfile(row: any) {
   return {
     id: row.id ?? row.customer_id,
     customerId: row.customer_id,
-    displayName: row.display_name ?? row.phone ?? row.apple_id ?? 'Apple Customer',
+    displayName: senderDisplayName({ customer_name: row.display_name, customer_id: row.customer_id }, row),
     appleId: row.apple_id ?? null,
     email: row.email ?? null,
     phone: row.phone ?? null,
@@ -174,7 +201,7 @@ function mapAppointment(row: any) {
     conversationId: row.conversation_id ?? null,
     agentId: row.agent_id ?? null,
     customerId: row.customer_id ?? null,
-    customerName: row.customer_name ?? 'Apple Customer',
+    customerName: senderDisplayName(row, row.profile),
     serviceIdentifier: row.service_identifier ?? null,
     serviceTitle: row.service_title ?? null,
     serviceSubtitle: row.service_subtitle ?? null,
@@ -242,7 +269,7 @@ function derivedAppointmentFromConversation(row: any) {
     conversation_id: row.id,
     agent_id: row.active_agent_id ?? row.agent_id,
     customer_id: row.customer_id,
-    customer_name: row.customer_name ?? 'Apple Customer',
+    customer_name: senderDisplayName(row, row.profile),
     service_identifier: selectedService?.id ?? null,
     service_title: selectedService?.title ?? null,
     service_subtitle: selectedService?.subtitle ?? null,
@@ -364,14 +391,33 @@ async function fetchConversations(params: {
   }
 
   const full = await run(CONVERSATION_SELECT_FULL);
-  if (!full.error) return (full.data ?? []).filter((r) => !params.q || includesQuery(r, params.q)).slice(0, params.limit);
+  if (!full.error) {
+    const rows = await attachProfiles(full.data ?? []);
+    return rows.filter((r) => !params.q || includesQuery(r, params.q)).slice(0, params.limit);
+  }
 
   const base = await run(CONVERSATION_SELECT_BASE);
   if (base.error) {
     warnOnce('conversations list', base.error);
     return [];
   }
-  return (base.data ?? []).filter((r) => !params.q || includesQuery(r, params.q)).slice(0, params.limit);
+  const rows = await attachProfiles(base.data ?? []);
+  return rows.filter((r) => !params.q || includesQuery(r, params.q)).slice(0, params.limit);
+}
+
+async function attachProfiles(rows: any[]): Promise<any[]> {
+  const ids = [...new Set(rows.map((row) => cleanText(row.customer_id)).filter((id): id is string => Boolean(id)))];
+  if (ids.length === 0) return rows;
+  const { data, error } = await supabase
+    .from('customer_profiles')
+    .select('customer_id, display_name, apple_id, email, phone')
+    .in('customer_id', ids);
+  if (error) {
+    warnOnce('conversation profile join', error);
+    return rows;
+  }
+  const byCustomerId = new Map((data ?? []).map((profile: any) => [profile.customer_id, profile]));
+  return rows.map((row) => ({ ...row, profile: byCustomerId.get(row.customer_id) ?? null }));
 }
 
 async function fetchConversation(id: string): Promise<any | null> {
@@ -380,7 +426,7 @@ async function fetchConversation(id: string): Promise<any | null> {
     .select(CONVERSATION_SELECT_FULL)
     .eq('id', id)
     .maybeSingle();
-  if (!full.error) return full.data;
+  if (!full.error) return (await attachProfiles(full.data ? [full.data] : []))[0] ?? null;
 
   const base = await supabase
     .from('conversations')
@@ -391,7 +437,7 @@ async function fetchConversation(id: string): Promise<any | null> {
     warnOnce('conversation detail', base.error);
     return null;
   }
-  return base.data;
+  return (await attachProfiles(base.data ? [base.data] : []))[0] ?? null;
 }
 
 async function fetchHandoff(id: string) {
@@ -775,7 +821,7 @@ operator.get('/operator/conversations/:id/customer-profile', async (c) => {
     profile: {
       id: profile?.id ?? null,
       customerId,
-      displayName: profile?.display_name ?? conversation.customer_name ?? 'Apple Customer',
+      displayName: senderDisplayName(conversation, profile),
       appleId: profile?.apple_id ?? null,
       email: profile?.email ?? null,
       phone: profile?.phone ?? null,
@@ -949,7 +995,7 @@ operator.get('/operator/customer-profiles/:customerId', async (c) => {
     return c.json({
       profile: {
         customerId,
-        displayName: 'Apple Customer',
+        displayName: customerId || 'Unknown Messages sender',
         trustLevel: 'standard',
         tags: [],
         attributes: {},
@@ -960,7 +1006,7 @@ operator.get('/operator/customer-profiles/:customerId', async (c) => {
     profile: {
       id: data?.id ?? null,
       customerId,
-      displayName: data?.display_name ?? 'Apple Customer',
+      displayName: senderDisplayName({ customer_id: customerId }, data),
       appleId: data?.apple_id ?? null,
       email: data?.email ?? null,
       phone: data?.phone ?? null,
@@ -1019,7 +1065,8 @@ operator.get('/operator/appointments', async (c) => {
 
   const { data, error } = await query;
   if (!error) {
-    return c.json({ appointments: (data ?? []).map(mapAppointment), source: 'appointments' });
+    const rows = await attachProfiles(data ?? []);
+    return c.json({ appointments: rows.map(mapAppointment), source: 'appointments' });
   }
 
   warnOnce('appointments list', error);

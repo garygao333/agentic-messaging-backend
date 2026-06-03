@@ -7,6 +7,8 @@ interface InferredCustomerProfile {
   email: string | null;
 }
 
+const GENERIC_DISPLAY_NAMES = new Set(['apple customer', 'messages sender', 'unknown messages sender']);
+
 function clean(value: unknown): string | null {
   return typeof value === 'string' && value.trim() ? value.trim() : null;
 }
@@ -38,7 +40,11 @@ function findByKey(raw: unknown, keys: Set<string>, depth = 0): string | null {
 
 function asPhone(value: string | null): string | null {
   if (!value) return null;
-  return /^\+?[0-9 ()-]{7,}$/.test(value) ? value : null;
+  const normalized = value.replace(/[^\d+]/g, '');
+  const digits = normalized.replace(/\D/g, '');
+  if (digits.length < 7) return null;
+  if (normalized.startsWith('+')) return `+${digits}`;
+  return digits.length === 10 ? `+1${digits}` : normalized;
 }
 
 function asEmail(value: string | null): string | null {
@@ -50,12 +56,29 @@ function inferProfile(raw: unknown): InferredCustomerProfile {
   const phone = asPhone(
     findByKey(
       raw,
-      new Set(['phone', 'phonenumber', 'mobile', 'mobilenumber', 'msisdn', 'sourceaddress']),
+      new Set([
+        'phone',
+        'phonenumber',
+        'mobile',
+        'mobilenumber',
+        'msisdn',
+        'sourceaddress',
+        'sourcephone',
+        'senderphone',
+        'senderphonenumber',
+        'fromphone',
+        'phoneorappleid',
+      ]),
     ),
   );
-  const email = asEmail(findByKey(raw, new Set(['email', 'emailaddress', 'appleid'])));
+  const email = asEmail(
+    findByKey(
+      raw,
+      new Set(['email', 'emailaddress', 'appleid', 'appleidaddress', 'senderappleid', 'fromappleid', 'phoneorappleid']),
+    ),
+  );
   const displayName = clean(
-    findByKey(raw, new Set(['displayname', 'customername', 'name', 'handle', 'displayhandle'])),
+    findByKey(raw, new Set(['displayname', 'customername', 'name', 'handle', 'displayhandle', 'sendername', 'fromname'])),
   );
 
   return {
@@ -64,6 +87,34 @@ function inferProfile(raw: unknown): InferredCustomerProfile {
     appleId: email,
     email,
   };
+}
+
+function isGenericDisplayName(value: unknown): boolean {
+  return !clean(value) || GENERIC_DISPLAY_NAMES.has(clean(value)!.toLowerCase());
+}
+
+function displayNameFor(customerId: string, existingDisplayName: unknown, inferred: InferredCustomerProfile): string {
+  const existing = clean(existingDisplayName);
+  if (existing && !isGenericDisplayName(existing)) return existing;
+  return inferred.displayName ?? inferred.phone ?? inferred.appleId ?? inferred.email ?? customerId;
+}
+
+async function updateConversationDisplayName(customerId: string, displayName: string): Promise<void> {
+  try {
+    const { data, error } = await supabase
+      .from('conversations')
+      .select('id, customer_name')
+      .eq('customer_id', customerId);
+    if (error || !data) return;
+    const ids = data
+      .filter((row) => isGenericDisplayName(row.customer_name) || clean(row.customer_name) === customerId)
+      .map((row) => row.id)
+      .filter(Boolean);
+    if (!ids.length) return;
+    await supabase.from('conversations').update({ customer_name: displayName }).in('id', ids);
+  } catch (err) {
+    console.warn('[customer-profile] conversation display sync skipped:', err);
+  }
 }
 
 export async function touchCustomerProfile(customerId: string, raw?: unknown): Promise<void> {
@@ -80,12 +131,7 @@ export async function touchCustomerProfile(customerId: string, raw?: unknown): P
 
     const row = {
       customer_id: customerId,
-      display_name:
-        existing?.display_name ??
-        inferred.displayName ??
-        inferred.phone ??
-        inferred.email ??
-        'Apple Customer',
+      display_name: displayNameFor(customerId, existing?.display_name, inferred),
       phone: existing?.phone ?? inferred.phone,
       apple_id: existing?.apple_id ?? inferred.appleId,
       email: existing?.email ?? inferred.email,
@@ -96,6 +142,7 @@ export async function touchCustomerProfile(customerId: string, raw?: unknown): P
     if (existing) {
       const { error } = await supabase.from('customer_profiles').update(row).eq('customer_id', customerId);
       if (error) throw error;
+      await updateConversationDisplayName(customerId, row.display_name);
       return;
     }
 
@@ -104,6 +151,7 @@ export async function touchCustomerProfile(customerId: string, raw?: unknown): P
       first_seen_at: now,
     });
     if (error) throw error;
+    await updateConversationDisplayName(customerId, row.display_name);
   } catch (err) {
     console.warn('[customer-profile] touch skipped:', err);
   }

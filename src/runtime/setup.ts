@@ -133,7 +133,7 @@ function testUsersFor(input: SetupDraftInput, customerId: string): unknown[] {
   return [
     {
       id: customerId,
-      name: 'Apple Customer',
+      name: customerId,
       phoneOrAppleId: customerId,
       handle: customerId,
       status: 'Active',
