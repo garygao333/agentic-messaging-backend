@@ -6,13 +6,14 @@
  * persisted on the conversation; "latest wins" redeploy (no version history).
  */
 import { supabase } from '../supabase.js';
-import { sendAppClip, sendText } from '../msp/send.js';
+import { sendText } from '../msp/send.js';
 import { parseCommand } from './commands.js';
 import { setActiveAgent } from './conversations.js';
 import type { InboundTurnMetadata } from './agentRuntime.js';
 import { touchCustomerProfile } from './customerProfile.js';
 import { verifyLoginCode } from './login.js';
 import { bufferAgentTurn } from './responseBuffer.js';
+import { completeAppClipSetup, startAppClipSetup } from './setup.js';
 
 function tapbackSummary(tapbacks: unknown): string | null {
   if (!Array.isArray(tapbacks) || tapbacks.length === 0) return null;
@@ -53,7 +54,7 @@ async function customerHandles(customerId: string): Promise<string[]> {
       .eq('customer_id', customerId)
       .maybeSingle();
     if (error || !data) return [];
-    return [data.display_name, data.phone, data.apple_id, data.email]
+    return [customerId, data.display_name, data.phone, data.apple_id, data.email]
       .map(textFrom)
       .filter((value: string | null): value is string => Boolean(value));
   } catch {
@@ -87,8 +88,8 @@ async function requireAgentActivationAccess(agentId: string, customerId: string)
     result === 'missing'
       ? 'That agent is no longer available. Please open the app and try again.'
       : result === 'not_testable'
-        ? 'That agent is not in Test Mode yet. Deploy it to test users from the app first.'
-        : 'This Messages sender is not listed as a test user for that agent.';
+        ? 'That agent is not available for Messages yet. Open the app to check its status.'
+        : 'This Messages sender is not allowed to activate that agent.';
   await sendText(customerId, message);
   return false;
 }
@@ -120,34 +121,33 @@ export async function handleInbound(
     }
 
     case 'START_AGENT_SETUP': {
-      await sendText(
+      await startAppClipSetup({
         customerId,
-        "Let's set up your agent. Tap the App Clip below to get started — it only takes a minute.",
-      );
-      const setupId = crypto.randomUUID();
-      try {
-        await sendAppClip(customerId, { setup_id: setupId });
-      } catch (err) {
-        console.warn('[handlers] App Clip send failed (is it configured in 1440?):', err);
-        await sendText(customerId, 'Open the Agentic Messaging app to continue setup.');
-      }
+        mspConversationId,
+        initialText: effectiveText,
+        raw: metadata.raw,
+      });
       return;
     }
 
     case 'AGENT_SETUP_COMPLETE': {
-      const { data } = await supabase
-        .from('setups')
-        .select('id, agent_id')
-        .eq('id', cmd.setupId)
-        .maybeSingle();
-      if (!data) {
-        await sendText(customerId, "Hmm, I couldn't find that setup. Please try again from the app.");
-        return;
+      try {
+        await completeAppClipSetup(
+          {
+            setupId: cmd.setupId,
+            customerId,
+            mspConversationId,
+            completionPayload: {
+              source: 'messages_command',
+              raw: metadata.raw ?? null,
+            },
+          },
+          { sendConfirmation: true, requireCustomerMatch: true },
+        );
+      } catch (err) {
+        console.warn('[handlers] setup completion failed:', err);
+        await sendText(customerId, "I couldn't finish setup from that link. Please reopen the App Clip and try once more.");
       }
-      await sendText(
-        customerId,
-        'Setup complete! Open the Agentic Messaging app to review and deploy your agent.',
-      );
       return;
     }
 

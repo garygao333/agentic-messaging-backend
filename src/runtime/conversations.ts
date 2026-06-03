@@ -74,9 +74,9 @@ function publicTurn(turn: HistoryTurn): Record<string, unknown> {
 }
 
 /** Set the agent this customer's thread is testing. */
-export async function setActiveAgent(customerId: string, agentId: string): Promise<void> {
+export async function setActiveAgent(customerId: string, agentId: string): Promise<string | null> {
   memRouting.set(customerId, agentId);
-  if (!(await ready())) return;
+  if (!(await ready())) return null;
   try {
     const { data, error } = await supabase.rpc('upsert_conversation_active_agent', {
       p_customer_id: customerId,
@@ -84,8 +84,10 @@ export async function setActiveAgent(customerId: string, agentId: string): Promi
     });
     if (error) throw error;
     if (typeof data === 'string') await returnActiveHandoffsToAgent(data);
+    return typeof data === 'string' ? data : null;
   } catch (err) {
     console.warn('[conversations] setActiveAgent atomic upsert failed:', err);
+    return null;
   }
 }
 

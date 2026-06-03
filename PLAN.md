@@ -1,7 +1,7 @@
 # Agentic Messaging Direction Plan
 
-**Version:** 0.1.2
-**Synced app version:** `agentic-messaging` 1.0.2
+**Version:** 0.1.3
+**Synced app version:** `agentic-messaging` 1.0.3
 **Date:** 2026-06-03
 
 ## Product Direction

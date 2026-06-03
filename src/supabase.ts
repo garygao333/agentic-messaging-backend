@@ -34,6 +34,9 @@ export interface AgentRow {
   suggested_actions: string[];
   test_users: unknown[];
   status: 'Draft' | 'Generating' | 'Test Mode' | 'Deployed';
+  created_by_customer_id?: string | null;
+  setup_id?: string | null;
+  provenance?: Record<string, unknown>;
 }
 
 export async function getAgent(id: string): Promise<AgentRow | null> {

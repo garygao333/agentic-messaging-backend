@@ -1,12 +1,25 @@
 # Changelog
 
-## Unreleased
+## 0.1.3 - 2026-06-03
 
 ### Changed
 - Removed stale operator-first planning docs so `PLAN.md` remains the single
   source of truth for the App Clip-first demo flow.
 - Rewrote the backend README around the current one-business-line Messages
   runtime and documented runtime plugins as post-activation behavior.
+- Added durable App Clip setup/customer binding, setup-token validation, and
+  agent provenance for the one-business-line demo flow.
+- Added App Clip setup completion endpoints that create/generate/deploy an
+  agent, activate it for the bound customer thread, and return setup/agent
+  payloads to the app.
+- Changed no-active-agent inbound Messages handling to send/reuse App Clip setup
+  instead of telling customers to open the full app.
+- Hardened public setup completion so caller-supplied customer and agent IDs
+  cannot hijack another setup.
+
+### Synced With App
+- Matches app `1.0.3`, which adds the App Clip-first setup UI and completion
+  client for same-thread activation.
 
 ## 0.1.2 - 2026-06-03
 

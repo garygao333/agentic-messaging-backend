@@ -22,6 +22,7 @@ import {
   updateHandoffSession,
 } from './handoff.js';
 import { runRuntimePlugins } from './plugins/registry.js';
+import { startAppClipSetup } from './setup.js';
 
 const nextRequestId = () => crypto.randomUUID();
 const CHERT_WEBSITE_URL = 'https://trychert.com';
@@ -372,7 +373,12 @@ export async function runAgentTurn(
 
   const agentId = state.activeAgentId;
   if (!agentId) {
-    await sendText(customerId, 'Open the app to pick an agent to test, or text START_AGENT_SETUP.');
+    await startAppClipSetup({
+      customerId,
+      mspConversationId,
+      initialText: customerText,
+      raw: metadata.raw,
+    });
     return;
   }
 
