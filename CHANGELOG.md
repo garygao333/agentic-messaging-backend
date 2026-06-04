@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.1.10 - 2026-06-03
+
+### Changed
+- Added `gary@trychert.com` to the default super-admin allowlist alongside
+  `ian@trychert.com` so both accounts can bypass Messages verification and
+  manage inbound conversations.
+
+### Synced With App
+- Matches app `1.0.6`, which exposes Admin Mode to the same two accounts.
+
 ## 0.1.9 - 2026-06-03
 
 ### Fixed

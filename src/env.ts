@@ -53,8 +53,8 @@ export const env = {
   applePayMerchantSessionJson: process.env.APPLE_PAY_MERCHANT_SESSION_JSON ?? '',
 
   // Super admins skip Apple Messages verification and land straight on the
-  // dashboard. Comma-separated emails; defaults to ian@trychert.com only.
-  superAdminEmails: (process.env.SUPER_ADMIN_EMAILS ?? 'ian@trychert.com')
+  // dashboard. Comma-separated emails.
+  superAdminEmails: (process.env.SUPER_ADMIN_EMAILS ?? 'ian@trychert.com,gary@trychert.com')
     .split(',')
     .map((e) => e.trim().toLowerCase())
     .filter(Boolean),
