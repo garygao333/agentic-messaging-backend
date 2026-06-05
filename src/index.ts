@@ -5,6 +5,7 @@ import { env } from './env.js';
 import { auth } from './routes/auth.js';
 import { agents } from './routes/agents.js';
 import { operator } from './routes/operator.js';
+import { payments } from './routes/payments.js';
 import { setup } from './routes/setup.js';
 import { webhook } from './routes/webhook.js';
 
@@ -61,6 +62,7 @@ app.get('/health', (c) =>
 app.route('/', auth);
 app.route('/', agents);
 app.route('/', operator);
+app.route('/', payments);
 app.route('/', setup);
 app.route('/', webhook);
 

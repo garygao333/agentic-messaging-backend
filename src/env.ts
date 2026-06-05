@@ -51,6 +51,19 @@ export const env = {
   applePayPaymentGatewayUrl: process.env.APPLE_PAY_PAYMENT_GATEWAY_URL ?? '',
   applePayFallbackUrl: process.env.APPLE_PAY_FALLBACK_URL ?? '',
   applePayMerchantSessionJson: process.env.APPLE_PAY_MERCHANT_SESSION_JSON ?? '',
+  applePayMerchantDisplayName: process.env.APPLE_PAY_MERCHANT_DISPLAY_NAME ?? 'Agentic Messaging',
+  applePayMerchantSessionEndpoint:
+    process.env.APPLE_PAY_MERCHANT_SESSION_ENDPOINT ??
+    'https://apple-pay-gateway.apple.com/paymentservices/paymentSession',
+  applePayMerchantIdentityCertPem: process.env.APPLE_PAY_MERCHANT_IDENTITY_CERT_PEM ?? '',
+  applePayMerchantIdentityCertBase64: process.env.APPLE_PAY_MERCHANT_IDENTITY_CERT_BASE64 ?? '',
+  applePayMerchantIdentityCertPath: process.env.APPLE_PAY_MERCHANT_IDENTITY_CERT_PATH ?? '',
+  applePayMerchantIdentityKeyPem: process.env.APPLE_PAY_MERCHANT_IDENTITY_KEY_PEM ?? '',
+  applePayMerchantIdentityKeyBase64: process.env.APPLE_PAY_MERCHANT_IDENTITY_KEY_BASE64 ?? '',
+  applePayMerchantIdentityKeyPath: process.env.APPLE_PAY_MERCHANT_IDENTITY_KEY_PATH ?? '',
+  applePayDomainAssociationText: process.env.APPLE_PAY_DOMAIN_ASSOCIATION_TEXT ?? '',
+  applePayDomainAssociationBase64: process.env.APPLE_PAY_DOMAIN_ASSOCIATION_BASE64 ?? '',
+  applePayDomainAssociationPath: process.env.APPLE_PAY_DOMAIN_ASSOCIATION_PATH ?? '',
 
   // Super admins skip Apple Messages verification and land straight on the
   // dashboard. Comma-separated emails.

@@ -7,6 +7,10 @@
  */
 import { env } from '../env.js';
 import { readFileSync } from 'node:fs';
+import {
+  hasApplePayMerchantIdentityConfig,
+  requestApplePayMerchantSession,
+} from './applePaySession.js';
 
 const AMB_EXTENSION_BID =
   'com.apple.messages.MSMessageExtensionBalloonPlugin:0000000000:com.apple.icloud.apps.messages.business.extension';
@@ -259,29 +263,15 @@ export function sendTimePicker(
   });
 }
 
-function applePayMerchantSession(): Record<string, unknown> | null {
-  if (!env.applePayMerchantSessionJson) return null;
-  try {
-    const parsed = JSON.parse(env.applePayMerchantSessionJson);
-    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : null;
-  } catch {
-    return null;
-  }
-}
-
 export function canSendApplePayRequest(): boolean {
-  return Boolean(
-    env.applePayMerchantIdentifier &&
-      env.applePayPaymentGatewayUrl &&
-      applePayMerchantSession(),
-  );
+  return hasApplePayMerchantIdentityConfig();
 }
 
-export function sendApplePayRequest(destinationId: string, input: ApplePayRequestInput) {
-  const merchantSession = applePayMerchantSession();
-  if (!env.applePayMerchantIdentifier || !env.applePayPaymentGatewayUrl || !merchantSession) {
+export async function sendApplePayRequest(destinationId: string, input: ApplePayRequestInput) {
+  if (!hasApplePayMerchantIdentityConfig()) {
     throw new Error('Apple Pay merchant configuration is not available');
   }
+  const merchantSession = await requestApplePayMerchantSession();
 
   return post({
     destinationId,

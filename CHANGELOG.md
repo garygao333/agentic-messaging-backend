@@ -1,5 +1,25 @@
 # Changelog
 
+## 0.1.11 - 2026-06-05
+
+### Added
+- Added just-in-time Apple Pay merchant-session creation for Apple Messages for
+  Business payment requests using the Merchant Identity certificate/key from
+  environment variables or local file paths.
+- Added a public Apple Pay payment gateway callback endpoint that acknowledges
+  authorization callbacks and records a redacted event shape for debugging.
+- Added a `.well-known/apple-developer-merchantid-domain-association` endpoint
+  backed by environment/file content so Apple Merchant Domain verification can
+  be completed without committing the association file.
+
+### Changed
+- Ignored local `certs/` material so Apple Pay certificates, CSRs, and private
+  keys do not get committed accidentally.
+
+### Notes
+- Live sends still require Apple Developer Merchant Domain verification for the
+  exact payment gateway domain before Apple will issue a merchant session.
+
 ## 0.1.10 - 2026-06-03
 
 ### Changed

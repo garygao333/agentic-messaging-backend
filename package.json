@@ -1,6 +1,6 @@
 {
   "name": "agentic-messaging-backend",
-  "version": "0.1.10",
+  "version": "0.1.11",
   "private": true,
   "type": "module",
   "description": "Apple Messages for Business backend (System 2) — 1440 MSP integration, agent runtime, and consolidated LLM endpoints.",
